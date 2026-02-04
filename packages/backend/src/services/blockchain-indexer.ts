@@ -1,0 +1,487 @@
+/**
+ * MarginMaster - Blockchain Event Indexer
+ *
+ * Subscribes to SUI blockchain events and synchronizes them to PostgreSQL database.
+ * Handles: PositionOpened, PositionClosed, CopyTradeExecuted, Liquidation events
+ */
+
+import { SuiJsonRpcClient } from '@mysten/sui/jsonRpc';
+import type { SuiEvent } from '@mysten/sui/client';
+import { prisma } from '../lib/prisma.js';
+import pino from 'pino';
+
+const logger = pino({ name: 'blockchain-indexer' });
+
+// Configuration
+const SUI_NETWORK = process.env.SUI_NETWORK || 'devnet';
+const MARGIN_MASTER_PACKAGE_ID = process.env.MARGIN_MASTER_PACKAGE_ID || '0x0';
+const POLL_INTERVAL_MS = 5000; // Poll every 5 seconds
+
+// SUI Client instance
+let suiClient: SuiJsonRpcClient;
+
+/**
+ * Initialize SUI client connection
+ */
+export function initializeSuiClient(): SuiJsonRpcClient {
+  const networkUrl = getSuiNetworkUrl(SUI_NETWORK);
+  suiClient = new SuiJsonRpcClient({ url: networkUrl });
+  logger.info({ network: SUI_NETWORK, url: networkUrl }, 'SUI client initialized');
+  return suiClient;
+}
+
+/**
+ * Get SUI network URL based on environment
+ */
+function getSuiNetworkUrl(network: string): string {
+  switch (network) {
+    case 'mainnet':
+      return 'https://fullnode.mainnet.sui.io';
+    case 'testnet':
+      return 'https://fullnode.testnet.sui.io';
+    case 'devnet':
+      return 'https://fullnode.devnet.sui.io';
+    default:
+      return 'https://fullnode.devnet.sui.io';
+  }
+}
+
+/**
+ * Event type definitions matching Move structs
+ */
+interface PositionOpenedEvent {
+  position_id: string;
+  owner: string;
+  trading_pair: number[]; // bytes
+  position_type: number;
+  entry_price: string;
+  quantity: string;
+  leverage: number;
+  margin: string;
+  timestamp: string;
+}
+
+interface PositionClosedEvent {
+  position_id: string;
+  owner: string;
+  close_price: string;
+  pnl: string;
+  is_profit: boolean;
+  timestamp: string;
+}
+
+interface CopyTradeExecutedEvent {
+  original_position_id: string;
+  follower_position_id: string;
+  trader: string;
+  follower: string;
+  copy_ratio: string;
+  timestamp: string;
+}
+
+interface LiquidationEvent {
+  position_id: string;
+  owner: string;
+  liquidation_price: string;
+  loss: string;
+  timestamp: string;
+}
+
+/**
+ * Handle PositionOpened event
+ */
+async function handlePositionOpened(event: SuiEvent) {
+  try {
+    const data = event.parsedJson as PositionOpenedEvent;
+
+    logger.info({ positionId: data.position_id, owner: data.owner }, 'Processing PositionOpened event');
+
+    // Convert bytes to string for trading pair
+    const tradingPairBytes = data.trading_pair;
+    const tradingPairStr = String.fromCharCode(...tradingPairBytes);
+
+    // Find or create user by SUI address
+    const user = await prisma.user.upsert({
+      where: { suiAddress: data.owner },
+      create: {
+        suiAddress: data.owner,
+        username: `trader_${data.owner.slice(0, 8)}`,
+        email: `${data.owner.slice(0, 8)}@generated.com`,
+      },
+      update: {},
+    });
+
+    // Find or create trading pair
+    const tradingPair = await prisma.tradingPair.upsert({
+      where: { symbol: tradingPairStr },
+      create: {
+        symbol: tradingPairStr,
+        baseAsset: tradingPairStr.split('/')[0] || 'BTC',
+        quoteAsset: tradingPairStr.split('/')[1] || 'USDC',
+        isActive: true,
+        minQuantity: 0.001, // Minimum 0.001 units (e.g., 0.001 BTC)
+        maxLeverage: 100, // Maximum 100x leverage
+      },
+      update: {},
+    });
+
+    // Create position in database
+    await prisma.position.create({
+      data: {
+        userId: user.id,
+        tradingPairId: tradingPair.id,
+        positionType: data.position_type === 0 ? 'LONG' : 'SHORT',
+        entryPrice: parseFloat(data.entry_price) / 1000000, // Convert from 6 decimals
+        quantity: parseFloat(data.quantity) / 1000000,
+        leverage: data.leverage,
+        margin: parseFloat(data.margin) / 1000000,
+        status: 'OPEN',
+        isCopyTrade: false,
+        onChainPositionId: data.position_id,
+        txHash: event.id.txDigest,
+      },
+    });
+
+    // Check for copy relations and execute copy trades
+    const followers = await prisma.copyRelation.findMany({
+      where: {
+        trader: { suiAddress: data.owner },
+        isActive: true,
+      },
+      include: {
+        follower: true,
+      },
+    });
+
+    logger.info({ followerCount: followers.length }, 'Found active copy relations');
+
+    // Note: Copy trade execution is handled by the CopyTradeExecuted event
+    // This just logs the potential copies
+
+    logger.info({ positionId: data.position_id }, 'PositionOpened event processed successfully');
+  } catch (error) {
+    logger.error({ error, event }, 'Error handling PositionOpened event');
+    throw error;
+  }
+}
+
+/**
+ * Handle PositionClosed event
+ */
+async function handlePositionClosed(event: SuiEvent) {
+  try {
+    const data = event.parsedJson as PositionClosedEvent;
+
+    logger.info({ positionId: data.position_id }, 'Processing PositionClosed event');
+
+    // Update position status
+    const position = await prisma.position.findFirst({
+      where: { onChainPositionId: data.position_id },
+    });
+
+    if (!position) {
+      logger.warn({ positionId: data.position_id }, 'Position not found in database');
+      return;
+    }
+
+    await prisma.position.update({
+      where: { id: position.id },
+      data: {
+        status: 'CLOSED',
+        currentPrice: parseFloat(data.close_price) / 1000000,
+        realizedPnL: data.is_profit
+          ? parseFloat(data.pnl) / 1000000
+          : -parseFloat(data.pnl) / 1000000,
+        closedAt: new Date(parseInt(data.timestamp)),
+      },
+    });
+
+    // Create trade record
+    await prisma.trade.create({
+      data: {
+        userId: position.userId,
+        positionId: position.id,
+        tradingPairId: position.tradingPairId,
+        tradeType: 'CLOSE',
+        side: position.positionType,
+        price: parseFloat(data.close_price) / 1000000,
+        quantity: position.quantity,
+        value: position.quantity * (parseFloat(data.close_price) / 1000000),
+        fee: 0, // No fee for closing positions
+        pnl: data.is_profit
+          ? parseFloat(data.pnl) / 1000000
+          : -parseFloat(data.pnl) / 1000000,
+        txHash: event.id.txDigest,
+      },
+    });
+
+    // Create notification for user
+    await prisma.notification.create({
+      data: {
+        userId: position.userId,
+        type: 'POSITION_CLOSED',
+        title: 'Position Closed',
+        message: `Your ${position.positionType} position closed with ${data.is_profit ? 'profit' : 'loss'}: $${(parseFloat(data.pnl) / 1000000).toFixed(2)}`,
+        isRead: false,
+      },
+    });
+
+    logger.info({ positionId: data.position_id, pnl: data.pnl, isProfit: data.is_profit }, 'PositionClosed event processed successfully');
+  } catch (error) {
+    logger.error({ error, event }, 'Error handling PositionClosed event');
+    throw error;
+  }
+}
+
+/**
+ * Handle CopyTradeExecuted event
+ */
+async function handleCopyTradeExecuted(event: SuiEvent) {
+  try {
+    const data = event.parsedJson as CopyTradeExecutedEvent;
+
+    logger.info({
+      originalPositionId: data.original_position_id,
+      followerPositionId: data.follower_position_id
+    }, 'Processing CopyTradeExecuted event');
+
+    // Find original position
+    const originalPosition = await prisma.position.findFirst({
+      where: { onChainPositionId: data.original_position_id },
+      include: { tradingPair: true },
+    });
+
+    if (!originalPosition) {
+      logger.warn({ positionId: data.original_position_id }, 'Original position not found');
+      return;
+    }
+
+    // Find follower user
+    const follower = await prisma.user.findFirst({
+      where: { suiAddress: data.follower },
+    });
+
+    if (!follower) {
+      logger.warn({ followerAddress: data.follower }, 'Follower user not found');
+      return;
+    }
+
+    // Calculate copy trade size based on ratio
+    const copyRatio = parseFloat(data.copy_ratio) / 10000; // Convert from basis points
+    const followerQuantity = originalPosition.quantity * copyRatio;
+    const followerMargin = originalPosition.margin * copyRatio;
+
+    // Create follower position
+    await prisma.position.create({
+      data: {
+        userId: follower.id,
+        tradingPairId: originalPosition.tradingPairId,
+        positionType: originalPosition.positionType,
+        entryPrice: originalPosition.entryPrice,
+        quantity: followerQuantity,
+        leverage: originalPosition.leverage,
+        margin: followerMargin,
+        status: 'OPEN',
+        isCopyTrade: true,
+        originalPositionId: originalPosition.id,
+        onChainPositionId: data.follower_position_id,
+        txHash: event.id.txDigest,
+      },
+    });
+
+    // Create notification for follower
+    await prisma.notification.create({
+      data: {
+        userId: follower.id,
+        type: 'COPY_TRADE_EXECUTED',
+        title: 'Copy Trade Executed',
+        message: `Copied ${originalPosition.positionType} position on ${originalPosition.tradingPair.symbol} with ${(copyRatio * 100).toFixed(0)}% ratio`,
+        isRead: false,
+      },
+    });
+
+    logger.info({
+      followerPositionId: data.follower_position_id,
+      copyRatio: copyRatio * 100
+    }, 'CopyTradeExecuted event processed successfully');
+  } catch (error) {
+    logger.error({ error, event }, 'Error handling CopyTradeExecuted event');
+    throw error;
+  }
+}
+
+/**
+ * Handle Liquidation event
+ */
+async function handleLiquidation(event: SuiEvent) {
+  try {
+    const data = event.parsedJson as LiquidationEvent;
+
+    logger.info({ positionId: data.position_id }, 'Processing Liquidation event');
+
+    // Find position
+    const position = await prisma.position.findFirst({
+      where: { onChainPositionId: data.position_id },
+    });
+
+    if (!position) {
+      logger.warn({ positionId: data.position_id }, 'Position not found for liquidation');
+      return;
+    }
+
+    // Update position status
+    await prisma.position.update({
+      where: { id: position.id },
+      data: {
+        status: 'LIQUIDATED',
+        currentPrice: parseFloat(data.liquidation_price) / 1000000,
+        realizedPnl: -parseFloat(data.loss) / 1000000,
+        closedAt: new Date(parseInt(data.timestamp)),
+      },
+    });
+
+    // Create trade record
+    await prisma.trade.create({
+      data: {
+        userId: position.userId,
+        positionId: position.id,
+        tradingPairId: position.tradingPairId,
+        tradeType: 'LIQUIDATION',
+        side: position.positionType,
+        price: parseFloat(data.liquidation_price) / 1000000,
+        quantity: position.quantity,
+        value: position.quantity * (parseFloat(data.liquidation_price) / 1000000),
+        fee: 0, // No fee for liquidations
+        pnl: -parseFloat(data.loss) / 1000000,
+        txHash: event.id.txDigest,
+      },
+    });
+
+    // Create notification
+    await prisma.notification.create({
+      data: {
+        userId: position.userId,
+        type: 'POSITION_LIQUIDATED',
+        title: 'Position Liquidated',
+        message: `Your ${position.positionType} position was liquidated at $${(parseFloat(data.liquidation_price) / 1000000).toFixed(2)}. Loss: $${(parseFloat(data.loss) / 1000000).toFixed(2)}`,
+        isRead: false,
+      },
+    });
+
+    logger.info({ positionId: data.position_id, loss: data.loss }, 'Liquidation event processed successfully');
+  } catch (error) {
+    logger.error({ error, event }, 'Error handling Liquidation event');
+    throw error;
+  }
+}
+
+/**
+ * Query events from blockchain
+ */
+async function queryEvents(eventType: string, cursor?: string) {
+  const filter = {
+    MoveEventType: `${MARGIN_MASTER_PACKAGE_ID}::events::${eventType}`,
+  };
+
+  try {
+    const result = await suiClient.queryEvents({
+      query: filter,
+      cursor,
+      limit: 50,
+    });
+
+    return result;
+  } catch (error) {
+    logger.error({ error, eventType }, 'Error querying events');
+    throw error;
+  }
+}
+
+/**
+ * Process events of a specific type
+ */
+async function processEvents(eventType: string, handler: (event: SuiEvent) => Promise<void>) {
+  let cursor: string | undefined;
+  let hasMore = true;
+
+  while (hasMore) {
+    try {
+      const result = await queryEvents(eventType, cursor);
+
+      for (const event of result.data) {
+        await handler(event);
+      }
+
+      hasMore = result.hasNextPage;
+      cursor = result.nextCursor ?? undefined;
+
+      if (result.data.length > 0) {
+        logger.info({
+          eventType,
+          processedCount: result.data.length,
+          hasMore
+        }, 'Processed event batch');
+      }
+    } catch (error) {
+      logger.error({ error, eventType }, 'Error processing events');
+      break;
+    }
+  }
+}
+
+/**
+ * Main indexer loop
+ */
+export async function startIndexer() {
+  logger.info('Starting blockchain event indexer...');
+
+  if (!suiClient) {
+    initializeSuiClient();
+  }
+
+  // Event type to handler mapping
+  const eventHandlers = {
+    'PositionOpened': handlePositionOpened,
+    'PositionClosed': handlePositionClosed,
+    'CopyTradeExecuted': handleCopyTradeExecuted,
+    'Liquidation': handleLiquidation,
+  };
+
+  // Main polling loop
+  while (true) {
+    try {
+      logger.info('Polling for new events...');
+
+      // Process each event type
+      for (const [eventType, handler] of Object.entries(eventHandlers)) {
+        await processEvents(eventType, handler);
+      }
+
+      // Wait before next poll
+      await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL_MS));
+    } catch (error) {
+      logger.error({ error }, 'Error in indexer main loop');
+      await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL_MS * 2)); // Wait longer on error
+    }
+  }
+}
+
+/**
+ * Graceful shutdown
+ */
+export async function stopIndexer() {
+  logger.info('Stopping blockchain event indexer...');
+  await prisma.$disconnect();
+  logger.info('Indexer stopped');
+}
+
+// Handle process termination
+process.on('SIGINT', async () => {
+  await stopIndexer();
+  process.exit(0);
+});
+
+process.on('SIGTERM', async () => {
+  await stopIndexer();
+  process.exit(0);
+});

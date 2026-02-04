@@ -1,0 +1,205 @@
+// Prisma schema for MarginMaster DeFi Platform
+// Database: PostgreSQL
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// User Model - Unique Sui blockchain address as identifier
+model User {
+  id                 String          @id @default(uuid())
+  suiAddress         String          @unique @map("sui_address")
+  username           String          @db.VarChar(50)
+  email              String?         @unique
+  avatarUrl          String?         @map("avatar_url")
+  bio                String?         @db.Text
+  createdAt          DateTime        @default(now()) @map("created_at")
+  updatedAt          DateTime        @updatedAt @map("updated_at")
+  deletedAt          DateTime?       @map("deleted_at")
+
+  // Relations
+  traderProfile      TraderProfile?
+  tradingRelations   CopyRelation[]  @relation("Trader")
+  followingRelations CopyRelation[]  @relation("Follower")
+  positions          Position[]
+  trades             Trade[]
+  notifications      Notification[]
+
+  @@index([suiAddress])
+  @@map("users")
+}
+
+// TraderProfile Model - Trading performance metrics for users
+model TraderProfile {
+  id            String   @id @default(uuid())
+  userId        String   @unique @map("user_id")
+  totalTrades   Int      @default(0) @map("total_trades")
+  winRate       Float    @default(0) @map("win_rate")
+  totalPnL      Float    @default(0) @map("total_pnl")
+  avgTradeSize  Float?   @map("avg_trade_size")
+  maxDrawdown   Float?   @map("max_drawdown")
+  sharpeRatio   Float?   @map("sharpe_ratio")
+  isPublic      Boolean  @default(true) @map("is_public")
+  followerCount Int      @default(0) @map("follower_count")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([isPublic])
+  @@map("trader_profiles")
+}
+
+// CopyRelation Model - Copy trading relationships between users
+model CopyRelation {
+  id                String     @id @default(uuid())
+  traderId          String     @map("trader_id")
+  followerId        String     @map("follower_id")
+  copyRatio         Float      @map("copy_ratio")
+  maxPositionSize   Float?     @map("max_position_size")
+  stopLossPercent   Float?     @map("stop_loss_percent")
+  takeProfitPercent Float?     @map("take_profit_percent")
+  isActive          Boolean    @default(true) @map("is_active")
+  createdAt         DateTime   @default(now()) @map("created_at")
+  updatedAt         DateTime   @updatedAt @map("updated_at")
+
+  // Relations
+  trader          User       @relation("Trader", fields: [traderId], references: [id], onDelete: Cascade)
+  follower        User       @relation("Follower", fields: [followerId], references: [id], onDelete: Cascade)
+  copiedPositions Position[]
+
+  @@unique([traderId, followerId])
+  @@index([traderId])
+  @@index([followerId])
+  @@index([isActive])
+  @@map("copy_relations")
+}
+
+// TradingPair Model - Available trading pairs (e.g., BTC/USDC, ETH/USDC)
+model TradingPair {
+  id          String     @id @default(uuid())
+  symbol      String     @unique
+  baseAsset   String     @map("base_asset")
+  quoteAsset  String     @map("quote_asset")
+  isActive    Boolean    @default(true) @map("is_active")
+  minQuantity Float      @map("min_quantity")
+  maxLeverage Float      @map("max_leverage")
+  createdAt   DateTime   @default(now()) @map("created_at")
+  updatedAt   DateTime   @updatedAt @map("updated_at")
+
+  // Relations
+  positions Position[]
+  trades    Trade[]
+
+  @@index([symbol])
+  @@index([isActive])
+  @@map("trading_pairs")
+}
+
+// Position Model - Track all trading positions (trader and follower positions)
+model Position {
+  id                 String        @id @default(uuid())
+  userId             String        @map("user_id")
+  tradingPairId      String        @map("trading_pair_id")
+  positionType       String        @map("position_type") // "LONG" | "SHORT"
+  entryPrice         Float         @map("entry_price")
+  currentPrice       Float?        @map("current_price")
+  quantity           Float
+  leverage           Float
+  margin             Float
+  unrealizedPnL      Float?        @map("unrealized_pnl")
+  realizedPnL        Float?        @map("realized_pnl")
+  stopLossPrice      Float?        @map("stop_loss_price")
+  takeProfitPrice    Float?        @map("take_profit_price")
+  status             String        @default("OPEN") // "OPEN" | "CLOSED" | "LIQUIDATED"
+
+  // Copy trading metadata
+  isCopyTrade        Boolean       @default(false) @map("is_copy_trade")
+  originalPositionId String?       @map("original_position_id")
+  copyRelationId     String?       @map("copy_relation_id")
+
+  // Blockchain references
+  onChainPositionId  String?       @unique @map("on_chain_position_id")
+  txHash             String?       @map("tx_hash")
+
+  openedAt           DateTime      @default(now()) @map("opened_at")
+  closedAt           DateTime?     @map("closed_at")
+  createdAt          DateTime      @default(now()) @map("created_at")
+  updatedAt          DateTime      @updatedAt @map("updated_at")
+
+  // Relations
+  user             User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tradingPair      TradingPair   @relation(fields: [tradingPairId], references: [id])
+  originalPosition Position?     @relation("CopyPosition", fields: [originalPositionId], references: [id])
+  copiedPositions  Position[]    @relation("CopyPosition")
+  copyRelation     CopyRelation? @relation(fields: [copyRelationId], references: [id])
+  trades           Trade[]
+
+  @@index([userId])
+  @@index([status])
+  @@index([onChainPositionId])
+  @@index([originalPositionId])
+  @@map("positions")
+}
+
+// Trade Model - Record all trade events (open, close, partial close, liquidation)
+model Trade {
+  id            String      @id @default(uuid())
+  positionId    String      @map("position_id")
+  userId        String      @map("user_id")
+  tradingPairId String      @map("trading_pair_id")
+  tradeType     String      @map("trade_type") // "OPEN" | "CLOSE" | "PARTIAL_CLOSE" | "LIQUIDATION"
+  side          String // "LONG" | "SHORT"
+  price         Float
+  quantity      Float
+  value         Float // price * quantity
+  fee           Float
+  pnl           Float? // Only for CLOSE trades
+
+  // Blockchain references
+  txHash      String  @map("tx_hash")
+  blockNumber BigInt? @map("block_number")
+
+  executedAt DateTime @default(now()) @map("executed_at")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  // Relations
+  position    Position    @relation(fields: [positionId], references: [id], onDelete: Cascade)
+  user        User        @relation(fields: [userId], references: [id])
+  tradingPair TradingPair @relation(fields: [tradingPairId], references: [id])
+
+  @@index([positionId])
+  @@index([userId])
+  @@index([txHash])
+  @@index([executedAt])
+  @@map("trades")
+}
+
+// Notification Model - User notifications for position updates, copy trades, alerts
+model Notification {
+  id        String    @id @default(uuid())
+  userId    String    @map("user_id")
+  type      String // "POSITION_OPENED" | "POSITION_CLOSED" | "COPY_EXECUTED" | "STOP_LOSS_HIT" | "LIQUIDATION"
+  title     String
+  message   String    @db.Text
+  data      Json? // Additional structured data
+  isRead    Boolean   @default(false) @map("is_read")
+  readAt    DateTime? @map("read_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([isRead])
+  @@index([createdAt])
+  @@map("notifications")
+}
