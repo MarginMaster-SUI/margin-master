@@ -5,44 +5,76 @@
  * Handles: PositionOpened, PositionClosed, CopyTradeExecuted, Liquidation events
  */
 
-import { SuiJsonRpcClient } from '@mysten/sui/jsonRpc';
-import type { SuiEvent } from '@mysten/sui/client';
+import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import { prisma } from '../lib/prisma.js';
 import pino from 'pino';
+import { readFileSync, writeFileSync, existsSync } from 'fs';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
 
 const logger = pino({ name: 'blockchain-indexer' });
 
+// Event type from GraphQL response
+interface SuiEvent {
+  id: { txDigest: string };
+  parsedJson: Record<string, unknown>;
+}
+
 // Configuration
-const SUI_NETWORK = process.env.SUI_NETWORK || 'devnet';
+const SUI_NETWORK = process.env.SUI_NETWORK || 'testnet';
 const MARGIN_MASTER_PACKAGE_ID = process.env.MARGIN_MASTER_PACKAGE_ID || '0x0';
 const POLL_INTERVAL_MS = 5000; // Poll every 5 seconds
 
+// Cursor persistence file path
+const CURSOR_FILE = join(dirname(fileURLToPath(import.meta.url)), '../../.indexer-cursors.json');
+
+function loadCursors(): Record<string, string> {
+  try {
+    if (existsSync(CURSOR_FILE)) {
+      return JSON.parse(readFileSync(CURSOR_FILE, 'utf-8'));
+    }
+  } catch (e) {
+    logger.warn({ error: e }, 'Failed to load cursors, starting fresh');
+  }
+  return {};
+}
+
+function saveCursor(eventType: string, cursor: string) {
+  try {
+    const cursors = loadCursors();
+    cursors[eventType] = cursor;
+    writeFileSync(CURSOR_FILE, JSON.stringify(cursors, null, 2));
+  } catch (e) {
+    logger.warn({ error: e }, 'Failed to persist cursor');
+  }
+}
+
 // SUI Client instance
-let suiClient: SuiJsonRpcClient;
+let suiClient: SuiGraphQLClient;
 
 /**
- * Initialize SUI client connection
+ * Initialize SUI GraphQL client connection
  */
-export function initializeSuiClient(): SuiJsonRpcClient {
-  const networkUrl = getSuiNetworkUrl(SUI_NETWORK);
-  suiClient = new SuiJsonRpcClient({ url: networkUrl });
-  logger.info({ network: SUI_NETWORK, url: networkUrl }, 'SUI client initialized');
+export function initializeSuiClient(): SuiGraphQLClient {
+  const networkUrl = getSuiGraphQLUrl(SUI_NETWORK);
+  suiClient = new SuiGraphQLClient({ url: networkUrl });
+  logger.info({ network: SUI_NETWORK, url: networkUrl }, 'SUI GraphQL client initialized');
   return suiClient;
 }
 
 /**
  * Get SUI network URL based on environment
  */
-function getSuiNetworkUrl(network: string): string {
+function getSuiGraphQLUrl(network: string): string {
   switch (network) {
     case 'mainnet':
-      return 'https://fullnode.mainnet.sui.io';
+      return 'https://sui-mainnet.mystenlabs.com/graphql';
     case 'testnet':
-      return 'https://fullnode.testnet.sui.io';
+      return 'https://sui-testnet.mystenlabs.com/graphql';
     case 'devnet':
-      return 'https://fullnode.devnet.sui.io';
+      return 'https://sui-devnet.mystenlabs.com/graphql';
     default:
-      return 'https://fullnode.devnet.sui.io';
+      return 'https://sui-testnet.mystenlabs.com/graphql';
   }
 }
 
@@ -96,8 +128,12 @@ async function handlePositionOpened(event: SuiEvent) {
 
     logger.info({ positionId: data.position_id, owner: data.owner }, 'Processing PositionOpened event');
 
-    // Convert bytes to string for trading pair
+    // Convert bytes to string for trading pair (with validation)
     const tradingPairBytes = data.trading_pair;
+    if (!Array.isArray(tradingPairBytes) || tradingPairBytes.length === 0 || tradingPairBytes.some(b => typeof b !== 'number' || b < 0 || b > 127)) {
+      logger.warn({ tradingPairBytes }, 'Invalid trading pair bytes, skipping event');
+      return;
+    }
     const tradingPairStr = String.fromCharCode(...tradingPairBytes);
 
     // Find or create user by SUI address
@@ -335,7 +371,7 @@ async function handleLiquidation(event: SuiEvent) {
       data: {
         status: 'LIQUIDATED',
         currentPrice: parseFloat(data.liquidation_price) / 1000000,
-        realizedPnl: -parseFloat(data.loss) / 1000000,
+        realizedPnL: -parseFloat(data.loss) / 1000000,
         closedAt: new Date(parseInt(data.timestamp)),
       },
     });
@@ -376,21 +412,53 @@ async function handleLiquidation(event: SuiEvent) {
 }
 
 /**
- * Query events from blockchain
+ * Query events from blockchain using GraphQL
  */
 async function queryEvents(eventType: string, cursor?: string) {
-  const filter = {
-    MoveEventType: `${MARGIN_MASTER_PACKAGE_ID}::events::${eventType}`,
-  };
+  const eventTypeFilter = `${MARGIN_MASTER_PACKAGE_ID}::events::${eventType}`;
 
   try {
-    const result = await suiClient.queryEvents({
-      query: filter,
-      cursor,
-      limit: 50,
+    const query = `
+      query QueryEvents($eventType: String!, $after: String, $limit: Int) {
+        events(
+          filter: { eventType: $eventType }
+          after: $after
+          first: $limit
+        ) {
+          pageInfo {
+            hasNextPage
+            endCursor
+          }
+          nodes {
+            sendingModule { name }
+            type { repr }
+            json
+            timestamp
+            bcs
+          }
+        }
+      }
+    `;
+
+    const result = await suiClient.query({
+      query,
+      variables: {
+        eventType: eventTypeFilter,
+        after: cursor || null,
+        limit: 50,
+      },
     });
 
-    return result;
+    const events = (result.data as any)?.events;
+
+    return {
+      data: (events?.nodes || []).map((node: any) => ({
+        id: { txDigest: node.timestamp || '' },
+        parsedJson: node.json ? JSON.parse(node.json) : {},
+      })),
+      hasNextPage: events?.pageInfo?.hasNextPage || false,
+      nextCursor: events?.pageInfo?.endCursor || undefined,
+    };
   } catch (error) {
     logger.error({ error, eventType }, 'Error querying events');
     throw error;
@@ -401,7 +469,8 @@ async function queryEvents(eventType: string, cursor?: string) {
  * Process events of a specific type
  */
 async function processEvents(eventType: string, handler: (event: SuiEvent) => Promise<void>) {
-  let cursor: string | undefined;
+  const cursors = loadCursors();
+  let cursor: string | undefined = cursors[eventType];
   let hasMore = true;
 
   while (hasMore) {
@@ -413,13 +482,18 @@ async function processEvents(eventType: string, handler: (event: SuiEvent) => Pr
       }
 
       hasMore = result.hasNextPage;
-      cursor = result.nextCursor ?? undefined;
+      cursor = result.nextCursor;
+
+      // Persist cursor after each batch to survive restarts
+      if (cursor) {
+        saveCursor(eventType, cursor);
+      }
 
       if (result.data.length > 0) {
         logger.info({
           eventType,
           processedCount: result.data.length,
-          hasMore
+          hasMore,
         }, 'Processed event batch');
       }
     } catch (error) {
