@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useTradingContract } from '@/hooks/useTradingContract'
 import { api } from '@/services/api'
+import { useToast } from '@/components/Toast'
 
 interface CopyTradeModalProps {
   traderAddress: string
@@ -19,6 +20,7 @@ export function CopyTradeModal({
   const [copyRatio, setCopyRatio] = useState(50)
   const [maxPositionSize, setMaxPositionSize] = useState('1000')
   const [isLoading, setIsLoading] = useState(false)
+  const { toast } = useToast()
 
   const handleSubmit = async () => {
     setIsLoading(true)
@@ -34,11 +36,11 @@ export function CopyTradeModal({
         maxPositionSize: parseFloat(maxPositionSize) || undefined,
       })
 
-      alert('Copy trade enabled successfully!')
+      toast({ title: 'Copy trade enabled successfully!', type: 'success' })
       onClose()
     } catch (error) {
       console.error('Failed to enable copy trade:', error)
-      alert('Failed to enable copy trade. Please try again.')
+      toast({ title: 'Failed to enable copy trade', description: 'Please try again.', type: 'error' })
     } finally {
       setIsLoading(false)
     }

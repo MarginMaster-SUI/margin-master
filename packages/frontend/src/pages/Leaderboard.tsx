@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useCurrentAccount } from '@mysten/dapp-kit'
 import { api, LeaderboardEntry } from '@/services/api'
 import { CopyTradeModal } from '@/components/CopyTradeModal'
+import { LeaderboardSkeleton } from '@/components/Skeleton'
 
 type SortField = 'totalPnL' | 'winRate' | 'totalTrades' | 'followerCount'
 
@@ -26,17 +27,17 @@ export function Leaderboard() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <h1 className="text-2xl font-bold text-white">Top Traders</h1>
-        <div className="flex gap-2">
+        <div className="flex gap-1.5 overflow-x-auto">
           {sortButtons.map(({ field, label }) => (
             <button
               key={field}
               onClick={() => setSortBy(field)}
-              className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+              className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-all whitespace-nowrap ${
                 sortBy === field
-                  ? 'bg-primary-600 text-white'
-                  : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
+                  ? 'bg-primary-600 text-white shadow-lg shadow-primary-600/20'
+                  : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-gray-200'
               }`}
             >
               {label}
@@ -47,7 +48,7 @@ export function Leaderboard() {
 
       <div className="card">
         {isLoading ? (
-          <div className="text-center py-12 text-gray-400">Loading leaderboard...</div>
+          <LeaderboardSkeleton />
         ) : !leaders || leaders.length === 0 ? (
           <div className="text-center py-12">
             <p className="text-gray-400 mb-2">No traders yet</p>
@@ -116,7 +117,7 @@ export function Leaderboard() {
                       {account && account.address !== trader.address && (
                         <button
                           onClick={() => setSelectedTrader(trader)}
-                          className="px-3 py-1.5 bg-primary-600 hover:bg-primary-700 text-white text-sm rounded-lg transition-colors"
+                          className="px-3 py-1.5 bg-primary-600 hover:bg-primary-700 text-white text-sm rounded-lg transition-all active:scale-95"
                         >
                           Copy
                         </button>

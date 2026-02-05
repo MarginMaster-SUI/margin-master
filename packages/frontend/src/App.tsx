@@ -1,12 +1,15 @@
-import { useEffect } from 'react'
+import { useEffect, lazy, Suspense } from 'react'
 import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import { useCurrentAccount } from '@mysten/dapp-kit'
 import { Header } from '@/components/Header'
-import { Dashboard } from '@/pages/Dashboard'
-import { Leaderboard } from '@/pages/Leaderboard'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
+import { ToastProvider } from '@/components/Toast'
+import { PageSkeleton } from '@/components/Skeleton'
 import { useWebSocket } from '@/hooks/useWebSocket'
 import { useAppStore } from '@/store/app-store'
+
+const Dashboard = lazy(() => import('@/pages/Dashboard').then((m) => ({ default: m.Dashboard })))
+const Leaderboard = lazy(() => import('@/pages/Leaderboard').then((m) => ({ default: m.Leaderboard })))
 
 function AppContent() {
   const account = useCurrentAccount()
@@ -22,10 +25,12 @@ function AppContent() {
     <div className="min-h-screen bg-gray-950">
       <Header />
       <main className="container mx-auto px-4 py-6">
-        <Routes>
-          <Route path="/" element={<Dashboard />} />
-          <Route path="/leaderboard" element={<Leaderboard />} />
-        </Routes>
+        <Suspense fallback={<PageSkeleton />}>
+          <Routes>
+            <Route path="/" element={<Dashboard />} />
+            <Route path="/leaderboard" element={<Leaderboard />} />
+          </Routes>
+        </Suspense>
       </main>
     </div>
   )
@@ -34,9 +39,11 @@ function AppContent() {
 function App() {
   return (
     <ErrorBoundary>
-      <BrowserRouter>
-        <AppContent />
-      </BrowserRouter>
+      <ToastProvider>
+        <BrowserRouter>
+          <AppContent />
+        </BrowserRouter>
+      </ToastProvider>
     </ErrorBoundary>
   )
 }

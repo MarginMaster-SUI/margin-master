@@ -3,12 +3,14 @@ import { useCurrentAccount } from '@mysten/dapp-kit'
 import { useTradingContract } from '@/hooks/useTradingContract'
 import { useAppStore } from '@/store/app-store'
 import { usdcToDisplay, calculatePnL } from '@/types/sui-contracts'
+import { useToast } from '@/components/Toast'
 
 export function PositionsList() {
   const account = useCurrentAccount()
   const { positions, marketData } = useAppStore()
   const { closePosition } = useTradingContract()
   const [closingPositionId, setClosingPositionId] = useState<string | null>(null)
+  const { toast } = useToast()
 
   const handleClosePosition = async (positionId: string, tradingPair: string) => {
     if (!account) return
@@ -17,14 +19,14 @@ export function PositionsList() {
     try {
       const currentPrice = marketData[tradingPair]?.price || 0
       if (currentPrice <= 0) {
-        alert('Cannot close position: current price is unavailable.')
+        toast({ title: 'Cannot close position', description: 'Current price is unavailable.', type: 'warning' })
         return
       }
       await closePosition(positionId, currentPrice)
-      alert('Position closed successfully!')
+      toast({ title: 'Position closed successfully!', type: 'success' })
     } catch (error) {
       console.error('Failed to close position:', error)
-      alert('Failed to close position. Please try again.')
+      toast({ title: 'Failed to close position', description: 'Please try again.', type: 'error' })
     } finally {
       setClosingPositionId(null)
     }
@@ -57,41 +59,109 @@ export function PositionsList() {
           No open positions. Start trading to see your positions here.
         </div>
       ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full">
-            <thead>
-              <tr className="border-b border-gray-800 text-left">
-                <th className="pb-3 text-sm font-medium text-gray-400">Pair</th>
-                <th className="pb-3 text-sm font-medium text-gray-400">Type</th>
-                <th className="pb-3 text-sm font-medium text-gray-400">Entry Price</th>
-                <th className="pb-3 text-sm font-medium text-gray-400">Current Price</th>
-                <th className="pb-3 text-sm font-medium text-gray-400">Quantity</th>
-                <th className="pb-3 text-sm font-medium text-gray-400">Leverage</th>
-                <th className="pb-3 text-sm font-medium text-gray-400">Margin</th>
-                <th className="pb-3 text-sm font-medium text-gray-400">PnL</th>
-                <th className="pb-3 text-sm font-medium text-gray-400">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {openPositions.map((position) => {
-                const currentPrice = marketData[position.trading_pair]?.price || 0
-                const pnl = calculatePnL(
-                  position.position_type,
-                  position.entry_price,
-                  (currentPrice * 1_000_000).toString(),
-                  position.quantity,
-                  position.leverage
-                )
-                const pnlDisplay = usdcToDisplay(pnl.pnl)
+        <>
+          {/* Desktop table */}
+          <div className="hidden md:block overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr className="border-b border-gray-800 text-left">
+                  <th className="pb-3 text-sm font-medium text-gray-400">Pair</th>
+                  <th className="pb-3 text-sm font-medium text-gray-400">Type</th>
+                  <th className="pb-3 text-sm font-medium text-gray-400">Entry Price</th>
+                  <th className="pb-3 text-sm font-medium text-gray-400">Current Price</th>
+                  <th className="pb-3 text-sm font-medium text-gray-400">Quantity</th>
+                  <th className="pb-3 text-sm font-medium text-gray-400">Leverage</th>
+                  <th className="pb-3 text-sm font-medium text-gray-400">Margin</th>
+                  <th className="pb-3 text-sm font-medium text-gray-400">PnL</th>
+                  <th className="pb-3 text-sm font-medium text-gray-400">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {openPositions.map((position) => {
+                  const currentPrice = marketData[position.trading_pair]?.price || 0
+                  const pnl = calculatePnL(
+                    position.position_type,
+                    position.entry_price,
+                    (currentPrice * 1_000_000).toString(),
+                    position.quantity,
+                    position.leverage
+                  )
+                  const pnlDisplay = usdcToDisplay(pnl.pnl)
 
-                return (
-                  <tr key={position.id} className="border-b border-gray-800">
-                    <td className="py-4 text-white font-medium">
-                      {position.trading_pair}
-                    </td>
-                    <td className="py-4">
+                  return (
+                    <tr key={position.id} className="border-b border-gray-800 hover:bg-gray-800/50 transition-colors">
+                      <td className="py-4 text-white font-medium">
+                        {position.trading_pair}
+                      </td>
+                      <td className="py-4">
+                        <span
+                          className={`px-2 py-1 rounded text-xs font-medium ${
+                            position.position_type === 'LONG'
+                              ? 'bg-success-500/20 text-success-500'
+                              : 'bg-danger-500/20 text-danger-500'
+                          }`}
+                        >
+                          {position.position_type}
+                        </span>
+                      </td>
+                      <td className="py-4 text-gray-300">
+                        ${usdcToDisplay(position.entry_price).toFixed(2)}
+                      </td>
+                      <td className="py-4 text-gray-300">
+                        ${currentPrice.toFixed(2)}
+                      </td>
+                      <td className="py-4 text-gray-300">
+                        {usdcToDisplay(position.quantity).toFixed(4)}
+                      </td>
+                      <td className="py-4 text-gray-300">{position.leverage}x</td>
+                      <td className="py-4 text-gray-300">
+                        ${usdcToDisplay(position.margin).toFixed(2)}
+                      </td>
+                      <td className="py-4">
+                        <span
+                          className={`font-semibold ${
+                            pnl.isProfit ? 'text-success-500' : 'text-danger-500'
+                          }`}
+                        >
+                          {pnl.isProfit ? '+' : '-'}${pnlDisplay.toFixed(2)}
+                        </span>
+                      </td>
+                      <td className="py-4">
+                        <button
+                          onClick={() => handleClosePosition(position.id, position.trading_pair)}
+                          disabled={closingPositionId === position.id}
+                          className="px-3 py-1 bg-danger-600 hover:bg-danger-700 text-white text-sm rounded transition-all active:scale-95 disabled:opacity-50"
+                        >
+                          {closingPositionId === position.id ? 'Closing...' : 'Close'}
+                        </button>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Mobile card layout */}
+          <div className="md:hidden space-y-3">
+            {openPositions.map((position) => {
+              const currentPrice = marketData[position.trading_pair]?.price || 0
+              const pnl = calculatePnL(
+                position.position_type,
+                position.entry_price,
+                (currentPrice * 1_000_000).toString(),
+                position.quantity,
+                position.leverage
+              )
+              const pnlDisplay = usdcToDisplay(pnl.pnl)
+
+              return (
+                <div key={position.id} className="p-4 bg-gray-800 rounded-lg space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="text-white font-semibold">{position.trading_pair}</span>
                       <span
-                        className={`px-2 py-1 rounded text-xs font-medium ${
+                        className={`px-2 py-0.5 rounded text-xs font-medium ${
                           position.position_type === 'LONG'
                             ? 'bg-success-500/20 text-success-500'
                             : 'bg-danger-500/20 text-danger-500'
@@ -99,44 +169,46 @@ export function PositionsList() {
                       >
                         {position.position_type}
                       </span>
-                    </td>
-                    <td className="py-4 text-gray-300">
-                      ${usdcToDisplay(position.entry_price).toFixed(2)}
-                    </td>
-                    <td className="py-4 text-gray-300">
-                      ${currentPrice.toFixed(2)}
-                    </td>
-                    <td className="py-4 text-gray-300">
-                      {usdcToDisplay(position.quantity).toFixed(4)}
-                    </td>
-                    <td className="py-4 text-gray-300">{position.leverage}x</td>
-                    <td className="py-4 text-gray-300">
-                      ${usdcToDisplay(position.margin).toFixed(2)}
-                    </td>
-                    <td className="py-4">
-                      <span
-                        className={`font-semibold ${
-                          pnl.isProfit ? 'text-success-500' : 'text-danger-500'
-                        }`}
-                      >
-                        {pnl.isProfit ? '+' : '-'}${pnlDisplay.toFixed(2)}
-                      </span>
-                    </td>
-                    <td className="py-4">
-                      <button
-                        onClick={() => handleClosePosition(position.id, position.trading_pair)}
-                        disabled={closingPositionId === position.id}
-                        className="px-3 py-1 bg-danger-600 hover:bg-danger-700 text-white text-sm rounded transition-colors disabled:opacity-50"
-                      >
-                        {closingPositionId === position.id ? 'Closing...' : 'Close'}
-                      </button>
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
+                      <span className="text-xs text-gray-400">{position.leverage}x</span>
+                    </div>
+                    <span
+                      className={`font-semibold ${
+                        pnl.isProfit ? 'text-success-500' : 'text-danger-500'
+                      }`}
+                    >
+                      {pnl.isProfit ? '+' : '-'}${pnlDisplay.toFixed(2)}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 text-sm">
+                    <div>
+                      <span className="text-gray-500">Entry</span>
+                      <p className="text-gray-200">${usdcToDisplay(position.entry_price).toFixed(2)}</p>
+                    </div>
+                    <div>
+                      <span className="text-gray-500">Current</span>
+                      <p className="text-gray-200">${currentPrice.toFixed(2)}</p>
+                    </div>
+                    <div>
+                      <span className="text-gray-500">Margin</span>
+                      <p className="text-gray-200">${usdcToDisplay(position.margin).toFixed(2)}</p>
+                    </div>
+                    <div>
+                      <span className="text-gray-500">Qty</span>
+                      <p className="text-gray-200">{usdcToDisplay(position.quantity).toFixed(4)}</p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => handleClosePosition(position.id, position.trading_pair)}
+                    disabled={closingPositionId === position.id}
+                    className="w-full py-2 bg-danger-600 hover:bg-danger-700 text-white text-sm rounded-lg transition-all active:scale-[0.98] disabled:opacity-50"
+                  >
+                    {closingPositionId === position.id ? 'Closing...' : 'Close Position'}
+                  </button>
+                </div>
+              )
+            })}
+          </div>
+        </>
       )}
     </div>
   )
