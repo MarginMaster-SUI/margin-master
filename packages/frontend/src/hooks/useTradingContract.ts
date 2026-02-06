@@ -106,12 +106,18 @@ export function useTradingContract() {
   const closePosition = async (positionId: string, closePrice: number) => {
     if (!account) throw new Error('Wallet not connected')
 
+    const vaultId = await findVault(account.address)
+    if (!vaultId) throw new Error('No vault found')
+
     const tx = new Transaction()
     tx.moveCall({
-      target: `${CONTRACT_ADDRESSES.PACKAGE_ID}::${CONTRACT_ADDRESSES.POSITION_MODULE}::close_position`,
+      target: `${CONTRACT_ADDRESSES.PACKAGE_ID}::${CONTRACT_ADDRESSES.POSITION_MODULE}::close_position_entry`,
+      typeArguments: [USDC_TYPE],
       arguments: [
         tx.object(positionId),
         tx.pure.u64(Math.floor(closePrice * 1_000_000)),
+        tx.object(vaultId),
+        tx.object('0x6'),
       ],
     })
 
