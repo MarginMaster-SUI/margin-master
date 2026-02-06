@@ -1,8 +1,9 @@
 [build]
 builder = "nixpacks"
+buildCommand = "pnpm --filter backend build"
 
 [deploy]
-startCommand = "npx prisma migrate deploy && npx tsx src/index.ts"
+startCommand = "cd packages/backend && pnpm exec prisma migrate deploy && node dist/index.js"
 healthcheckPath = "/health"
 healthcheckTimeout = 300
 restartPolicyType = "on_failure"
