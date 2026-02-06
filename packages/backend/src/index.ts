@@ -4,6 +4,8 @@
 
 import express from 'express';
 import cors from 'cors';
+import compression from 'compression';
+import helmet from 'helmet';
 import { createServer } from 'http';
 import { Server as SocketIOServer } from 'socket.io';
 import rateLimit from 'express-rate-limit';
@@ -27,6 +29,8 @@ const io = new SocketIOServer(httpServer, {
 });
 
 // Middleware
+app.use(helmet());
+app.use(compression());
 app.use(cors({ origin: FRONTEND_URL }));
 app.use(express.json());
 

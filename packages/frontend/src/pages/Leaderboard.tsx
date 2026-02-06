@@ -91,14 +91,14 @@ export function Leaderboard() {
                     <td className="py-4">
                       <div className="flex items-center gap-3">
                         <div className="w-8 h-8 bg-gradient-to-br from-primary-500 to-primary-700 rounded-full flex items-center justify-center text-white text-sm font-bold">
-                          {(trader.username || trader.address)[0].toUpperCase()}
+                          {(trader.username || trader.address)?.[0]?.toUpperCase() || '?'}
                         </div>
                         <div>
                           <div className="text-white font-medium">
-                            {trader.username || `${trader.address.slice(0, 6)}...${trader.address.slice(-4)}`}
+                            {trader.username || (trader.address ? `${trader.address.slice(0, 6)}...${trader.address.slice(-4)}` : 'Unknown')}
                           </div>
                           <div className="text-xs text-gray-500">
-                            {trader.address.slice(0, 6)}...{trader.address.slice(-4)}
+                            {trader.address ? `${trader.address.slice(0, 6)}...${trader.address.slice(-4)}` : ''}
                           </div>
                         </div>
                       </div>

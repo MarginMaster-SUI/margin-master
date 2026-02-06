@@ -15,13 +15,18 @@
     "indexer": "tsx src/services/blockchain-indexer.ts",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
-    "prisma:studio": "prisma studio"
+    "prisma:studio": "prisma studio",
+    "prisma:seed": "tsx prisma/seed.ts"
+  },
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "packageManager": "pnpm@10.28.2",
   "devDependencies": {
+    "@types/compression": "^1.8.1",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/jest": "^30.0.0",
@@ -38,10 +43,12 @@
   "dependencies": {
     "@mysten/sui": "^2.1.0",
     "@prisma/client": "5.22.0",
+    "compression": "^1.8.1",
     "cors": "^2.8.6",
     "decimal.js": "^10.6.0",
     "express": "^5.2.1",
     "express-rate-limit": "^8.2.1",
+    "helmet": "^8.1.0",
     "pino": "^10.3.0",
     "socket.io": "^4.8.3"
   }
