@@ -1,13 +1,33 @@
 import { useCurrentAccount } from '@mysten/dapp-kit'
+import { useSearchParams } from 'react-router-dom'
 import { MarketOverview } from '@/components/MarketOverview'
 import { TradingPanel } from '@/components/TradingPanel'
 import { PositionsList } from '@/components/PositionsList'
 import { PriceChart } from '@/components/PriceChart'
+import { CopyTradingTab } from '@/components/CopyTradingTab'
 import { usePositions } from '@/hooks/usePositions'
+
+const TABS = [
+  { key: 'trading', label: 'Trading' },
+  { key: 'copy-trading', label: 'Copy Trading' },
+] as const
+
+type TabKey = (typeof TABS)[number]['key']
 
 export function Dashboard() {
   const account = useCurrentAccount()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const activeTab = (searchParams.get('tab') as TabKey) || 'trading'
   usePositions()
+
+  const setTab = (tab: TabKey) => {
+    if (tab === 'trading') {
+      searchParams.delete('tab')
+    } else {
+      searchParams.set('tab', tab)
+    }
+    setSearchParams(searchParams, { replace: true })
+  }
 
   return (
     <>
@@ -23,19 +43,43 @@ export function Dashboard() {
         </div>
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
-        <div className="lg:col-span-2 space-y-6">
-          <MarketOverview />
-          <PriceChart />
+      {/* Tab Bar */}
+      {account && (
+        <div className="flex gap-1 mb-6 bg-gray-900 p-1 rounded-xl w-fit border border-gray-800">
+          {TABS.map((tab) => (
+            <button
+              key={tab.key}
+              onClick={() => setTab(tab.key)}
+              className={`px-5 py-2 rounded-lg text-sm font-medium transition-colors ${
+                activeTab === tab.key
+                  ? 'bg-primary-600 text-white'
+                  : 'text-gray-400 hover:text-white hover:bg-gray-800'
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
         </div>
-        <div>
-          <TradingPanel />
-        </div>
-      </div>
+      )}
 
-      <div className="mb-6">
-        <PositionsList />
-      </div>
+      {activeTab === 'trading' ? (
+        <>
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
+            <div className="lg:col-span-2 space-y-6">
+              <MarketOverview />
+              <PriceChart />
+            </div>
+            <div>
+              <TradingPanel />
+            </div>
+          </div>
+          <div className="mb-6">
+            <PositionsList />
+          </div>
+        </>
+      ) : (
+        <CopyTradingTab />
+      )}
     </>
   )
 }

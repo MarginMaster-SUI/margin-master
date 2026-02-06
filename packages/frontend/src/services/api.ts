@@ -57,6 +57,16 @@ export interface TraderStats {
   }>;
 }
 
+export interface CopyRelation {
+  id: string;
+  traderAddress: string;
+  traderUsername: string;
+  copyRatio: number;
+  maxPositionSize: number | null;
+  isActive: boolean;
+  createdAt: string;
+}
+
 export const api = {
   getLeaderboard(sortBy = 'totalPnL'): Promise<LeaderboardEntry[]> {
     return fetchApi(`/api/leaderboard?sortBy=${sortBy}`);
@@ -68,6 +78,14 @@ export const api = {
 
   getPositions(address: string): Promise<any[]> {
     return fetchApi(`/api/positions/${address}`);
+  },
+
+  getCopyRelations(address: string): Promise<CopyRelation[]> {
+    return fetchApi(`/api/copy-trades/my-relations/${address}`);
+  },
+
+  deactivateCopyRelation(id: string): Promise<{ success: boolean }> {
+    return fetchApi(`/api/copy-trades/deactivate/${id}`, { method: 'POST' });
   },
 
   registerCopyTrade(data: {

@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useTradingContract } from '@/hooks/useTradingContract'
 import { api } from '@/services/api'
 import { useToast } from '@/components/Toast'
@@ -17,6 +18,7 @@ export function CopyTradeModal({
   onClose,
 }: CopyTradeModalProps) {
   const { addCopyRelation } = useTradingContract()
+  const navigate = useNavigate()
   const [copyRatio, setCopyRatio] = useState(50)
   const [maxPositionSize, setMaxPositionSize] = useState('1000')
   const [isLoading, setIsLoading] = useState(false)
@@ -38,6 +40,7 @@ export function CopyTradeModal({
 
       toast({ title: 'Copy trade enabled successfully!', type: 'success' })
       onClose()
+      navigate('/?tab=copy-trading')
     } catch (error) {
       console.error('Failed to enable copy trade:', error)
       toast({ title: 'Failed to enable copy trade', description: 'Please try again.', type: 'error' })
