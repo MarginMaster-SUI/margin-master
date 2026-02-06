@@ -24,7 +24,7 @@ async function main() {
 
   // Create demo traders
   const traders = [
-    { suiAddress: '0xaaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111', username: 'CryptoWhale', bio: 'Top SUI trader' },
+    { suiAddress: '0xbdecf8a2fd1db5dfd049830a4ff5da5836d250b938a1e81f46157fdbdc3ee01f', username: 'CryptoWhale', bio: 'Top SUI trader' },
     { suiAddress: '0xbbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222', username: 'DeFiKing', bio: 'Margin specialist' },
     { suiAddress: '0xcccc3333cccc3333cccc3333cccc3333cccc3333cccc3333cccc3333cccc3333', username: 'SuiSensei', bio: 'Copy trade leader' },
     { suiAddress: '0xdddd4444dddd4444dddd4444dddd4444dddd4444dddd4444dddd4444dddd4444', username: 'AlphaHunter', bio: 'Risk-managed leverage' },
