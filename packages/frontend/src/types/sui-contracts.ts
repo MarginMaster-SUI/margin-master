@@ -135,9 +135,12 @@ export interface UpdatePositionArgs {
   current_price: TransactionArgument; // u64
 }
 
-export interface EnableCopyTradeArgs {
+export interface AddCopyRelationArgs {
+  registry: TransactionArgument; // CopyRelationRegistry object
   trader_address: TransactionArgument; // address
-  allocation_percentage: TransactionArgument; // u8 (1-100)
+  follower_address: TransactionArgument; // address
+  copy_ratio: TransactionArgument; // u64 (1-100)
+  max_position_size: TransactionArgument; // u64 in USDC base units
 }
 
 export interface ExecuteCopyTradeArgs {

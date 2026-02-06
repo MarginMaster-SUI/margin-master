@@ -16,7 +16,7 @@ export function CopyTradeModal({
   followerAddress,
   onClose,
 }: CopyTradeModalProps) {
-  const { enableCopyTrade } = useTradingContract()
+  const { addCopyRelation } = useTradingContract()
   const [copyRatio, setCopyRatio] = useState(50)
   const [maxPositionSize, setMaxPositionSize] = useState('1000')
   const [isLoading, setIsLoading] = useState(false)
@@ -25,8 +25,8 @@ export function CopyTradeModal({
   const handleSubmit = async () => {
     setIsLoading(true)
     try {
-      // 1. On-chain: enable copy trade relation
-      await enableCopyTrade(traderAddress, copyRatio)
+      // 1. On-chain: register copy trade relation
+      await addCopyRelation(traderAddress, copyRatio, parseFloat(maxPositionSize))
 
       // 2. Off-chain: register in database
       await api.registerCopyTrade({

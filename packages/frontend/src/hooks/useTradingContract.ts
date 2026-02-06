@@ -71,7 +71,7 @@ export function useTradingContract() {
     return result
   }
 
-  const enableCopyTrade = async (traderAddress: string, allocationPercentage: number) => {
+  const addCopyRelation = async (traderAddress: string, copyRatio: number, maxPositionSize: number) => {
     if (!account) {
       throw new Error('Wallet not connected')
     }
@@ -79,10 +79,13 @@ export function useTradingContract() {
     const tx = new Transaction()
 
     tx.moveCall({
-      target: `${CONTRACT_ADDRESSES.PACKAGE_ID}::${CONTRACT_ADDRESSES.COPY_EXECUTOR_MODULE}::enable_copy_trade`,
+      target: `${CONTRACT_ADDRESSES.PACKAGE_ID}::${CONTRACT_ADDRESSES.COPY_EXECUTOR_MODULE}::add_copy_relation`,
       arguments: [
+        tx.object(CONTRACT_ADDRESSES.COPY_RELATION_REGISTRY_ID),
         tx.pure.address(traderAddress),
-        tx.pure.u8(allocationPercentage),
+        tx.pure.address(account.address),
+        tx.pure.u64(copyRatio),
+        tx.pure.u64(Math.floor(maxPositionSize * 1_000_000)),
       ],
     })
 
@@ -174,7 +177,7 @@ export function useTradingContract() {
   return {
     openPosition,
     closePosition,
-    enableCopyTrade,
+    addCopyRelation,
     liquidatePosition,
     updateCopyRelation,
     deactivateCopyRelation,
