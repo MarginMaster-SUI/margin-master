@@ -24,10 +24,20 @@ module margin_master::position {
     const EInvalidTradingPair: u64 = 7;
     const ENotLiquidatable: u64 = 8;
     const EPnLOverflow: u64 = 9;
+    const EMarginBelowMinimum: u64 = 10;
 
     /// Position types
     const POSITION_LONG: u8 = 0;
     const POSITION_SHORT: u8 = 1;
+
+    /// Liquidation threshold: 80% of margin consumed by loss (8000 basis points)
+    const LIQUIDATION_THRESHOLD_BPS: u64 = 8000;
+    /// Liquidator reward: 5% of margin (500 basis points)
+    const LIQUIDATOR_REWARD_BPS: u64 = 500;
+    /// Basis points denominator
+    const BPS_DENOMINATOR: u64 = 10000;
+    /// Minimum margin: 1 unit (prevents dust positions)
+    const MIN_MARGIN: u64 = 1000000; // 1 USDC (6 decimals)
 
     /// Position object representing a margin trading position
     public struct Position<phantom T> has key, store {
@@ -65,6 +75,7 @@ module margin_master::position {
         assert!(entry_price > 0, EInvalidPrice);
         assert!(quantity > 0, EInvalidQuantity);
         assert!(margin_amount > 0, EInsufficientMargin);
+        assert!(margin_amount >= MIN_MARGIN, EMarginBelowMinimum);
         assert!(std::vector::length(&trading_pair) > 0, EInvalidTradingPair);
 
         // Deduct margin from vault
@@ -121,14 +132,10 @@ module margin_master::position {
         assert!(current_price > 0, EInvalidPrice);
 
         // Calculate PnL
-        let (pnl, is_profit) = calculate_pnl(
-            &position,
-            current_price
-        );
+        let (pnl, is_profit) = calculate_pnl(&position, current_price);
 
         let position_id = object::uid_to_inner(&position.id);
         let timestamp = clock::timestamp_ms(clock);
-        let margin_value = balance::value(&position.margin);
 
         // Emit event before destroying position
         events::emit_position_closed(
@@ -140,7 +147,189 @@ module margin_master::position {
             timestamp,
         );
 
-        // Destroy position
+        // Settle and destroy
+        settle_and_destroy(position, pnl, is_profit, vault, ctx);
+    }
+
+    /// Liquidate an underwater position - callable by anyone (keeper/bot)
+    /// Position is liquidatable when unrealized loss >= 80% of margin
+    /// Liquidator receives 5% of margin as reward
+    public fun liquidate_position<T>(
+        position: Position<T>,
+        current_price: u64,
+        vault: &mut Vault<T>,
+        clock: &Clock,
+        ctx: &mut TxContext
+    ) {
+        assert!(!position.is_closed, EPositionAlreadyClosed);
+        assert!(current_price > 0, EInvalidPrice);
+
+        let (pnl, is_profit) = calculate_pnl(&position, current_price);
+
+        // Can only liquidate losing positions
+        assert!(!is_profit, ENotLiquidatable);
+
+        let margin_value = balance::value(&position.margin);
+        let threshold = (margin_value * LIQUIDATION_THRESHOLD_BPS) / BPS_DENOMINATOR;
+
+        // Loss must exceed liquidation threshold (80% of margin)
+        assert!(pnl >= threshold, ENotLiquidatable);
+
+        let position_id = object::uid_to_inner(&position.id);
+        let position_owner = position.owner;
+        let timestamp = clock::timestamp_ms(clock);
+        let liquidator = tx_context::sender(ctx);
+
+        // Calculate liquidator reward (5% of margin)
+        let reward_amount = (margin_value * LIQUIDATOR_REWARD_BPS) / BPS_DENOMINATOR;
+
+        // Emit liquidation event
+        events::emit_liquidation(
+            position_id,
+            position_owner,
+            current_price,
+            pnl,
+            timestamp,
+        );
+
+        // Destroy position and extract margin
+        let Position {
+            id,
+            owner: _,
+            trading_pair: _,
+            position_type: _,
+            entry_price: _,
+            quantity: _,
+            leverage: _,
+            mut margin,
+            stop_loss_price: _,
+            take_profit_price: _,
+            is_copy_trade: _,
+            original_position_id: _,
+            opened_at: _,
+            is_closed: _,
+        } = position;
+
+        // Pay liquidator reward from seized margin
+        if (reward_amount > 0 && reward_amount < balance::value(&margin)) {
+            let reward_balance = balance::split(&mut margin, reward_amount);
+            let reward_coin = sui::coin::from_balance(reward_balance, ctx);
+            transfer::public_transfer(reward_coin, liquidator);
+        };
+
+        // Remaining margin goes back to vault (protocol keeps it)
+        let remaining = balance::value(&margin);
+        if (remaining > 0) {
+            balance::join(vault::borrow_balance_mut(vault), margin);
+            vault::decrease_committed_margin(vault, remaining + reward_amount);
+            vault::increase_available_liquidity(vault, remaining);
+        } else {
+            balance::destroy_zero(margin);
+            vault::decrease_committed_margin(vault, reward_amount);
+        };
+
+        object::delete(id);
+    }
+
+    /// Entry function for liquidation
+    public entry fun liquidate_position_entry<T>(
+        position: Position<T>,
+        current_price: u64,
+        vault: &mut Vault<T>,
+        clock: &Clock,
+        ctx: &mut TxContext
+    ) {
+        liquidate_position(position, current_price, vault, clock, ctx);
+    }
+
+    /// Calculate PnL for a position (uses u128 to prevent overflow)
+    public fun calculate_pnl<T>(
+        position: &Position<T>,
+        current_price: u64
+    ): (u64, bool) {
+        let entry_price = position.entry_price;
+
+        // Determine price direction based on position type
+        let (price_diff, is_profit) = if (position.position_type == POSITION_LONG) {
+            // LONG: profit if current_price > entry_price
+            if (current_price > entry_price) {
+                (current_price - entry_price, true)
+            } else {
+                (entry_price - current_price, false)
+            }
+        } else {
+            // SHORT: profit if current_price < entry_price
+            if (current_price < entry_price) {
+                (entry_price - current_price, true)
+            } else {
+                (current_price - entry_price, false)
+            }
+        };
+
+        // Single u128 calculation path (DRY)
+        let pnl = compute_pnl_u128(price_diff, position.quantity, position.leverage);
+        (pnl, is_profit)
+    }
+
+    /// Internal helper: compute PnL using u128 to prevent overflow
+    fun compute_pnl_u128(price_diff: u64, quantity: u64, leverage: u8): u64 {
+        let diff_128 = (price_diff as u128);
+        let qty_128 = (quantity as u128);
+        let lev_128 = (leverage as u128);
+
+        let pnl_128 = (diff_128 * lev_128 * qty_128) / 1000000;
+
+        // Check if result fits in u64
+        assert!(pnl_128 <= 18446744073709551615, EPnLOverflow);
+        (pnl_128 as u64)
+    }
+
+    /// Check if a position is liquidatable at a given price
+    public fun is_liquidatable<T>(position: &Position<T>, current_price: u64): bool {
+        if (position.is_closed || current_price == 0) return false;
+
+        let (pnl, is_profit) = calculate_pnl(position, current_price);
+        if (is_profit) return false;
+
+        let margin_value = balance::value(&position.margin);
+        let threshold = (margin_value * LIQUIDATION_THRESHOLD_BPS) / BPS_DENOMINATOR;
+        pnl >= threshold
+    }
+
+    /// Get liquidation price for a position
+    public fun get_liquidation_price<T>(position: &Position<T>): u64 {
+        let margin_value = balance::value(&position.margin);
+        let threshold = (margin_value * LIQUIDATION_THRESHOLD_BPS) / BPS_DENOMINATOR;
+
+        // threshold = (price_diff * leverage * quantity) / 1000000
+        // price_diff = (threshold * 1000000) / (leverage * quantity)
+        let leverage = (position.leverage as u128);
+        let quantity = (position.quantity as u128);
+        let threshold_128 = (threshold as u128);
+
+        if (leverage == 0 || quantity == 0) return 0;
+
+        let price_diff_128 = (threshold_128 * 1000000) / (leverage * quantity);
+        let price_diff = (price_diff_128 as u64);
+
+        if (position.position_type == POSITION_LONG) {
+            // LONG liquidation: entry_price - price_diff
+            if (price_diff >= position.entry_price) 0
+            else position.entry_price - price_diff
+        } else {
+            // SHORT liquidation: entry_price + price_diff
+            position.entry_price + price_diff
+        }
+    }
+
+    /// Internal: settle PnL and destroy position
+    fun settle_and_destroy<T>(
+        position: Position<T>,
+        pnl: u64,
+        is_profit: bool,
+        vault: &mut Vault<T>,
+        ctx: &mut TxContext
+    ) {
         let Position {
             id,
             owner,
@@ -158,63 +347,13 @@ module margin_master::position {
             is_closed: _,
         } = position;
 
-        // Settle PnL and return funds
         if (is_profit) {
-            // User made profit: withdraw from vault and add to margin
             vault::settle_profit(vault, margin, pnl, owner, ctx);
         } else {
-            // User made loss: deduct from margin and return to vault
             vault::settle_loss(vault, margin, pnl, owner, ctx);
         };
 
         object::delete(id);
-    }
-
-    /// Calculate PnL for a position (FIXED: uses u128 to prevent overflow)
-    public fun calculate_pnl<T>(
-        position: &Position<T>,
-        current_price: u64
-    ): (u64, bool) {
-        let entry_price = position.entry_price;
-        let quantity = position.quantity;
-        let leverage = (position.leverage as u128);
-
-        if (position.position_type == POSITION_LONG) {
-            // LONG: profit if current_price > entry_price
-            if (current_price > entry_price) {
-                let price_diff = ((current_price - entry_price) as u128);
-                let quantity_128 = (quantity as u128);
-
-                // Use u128 to prevent overflow: (price_diff * leverage * quantity) / 1000000
-                let pnl_128 = (price_diff * leverage * quantity_128) / 1000000;
-
-                // Check if result fits in u64
-                assert!(pnl_128 <= 18446744073709551615, EPnLOverflow);
-
-                ((pnl_128 as u64), true) // Profit
-            } else {
-                let price_diff = ((entry_price - current_price) as u128);
-                let quantity_128 = (quantity as u128);
-                let pnl_128 = (price_diff * leverage * quantity_128) / 1000000;
-                assert!(pnl_128 <= 18446744073709551615, EPnLOverflow);
-                ((pnl_128 as u64), false) // Loss
-            }
-        } else {
-            // SHORT: profit if current_price < entry_price
-            if (current_price < entry_price) {
-                let price_diff = ((entry_price - current_price) as u128);
-                let quantity_128 = (quantity as u128);
-                let pnl_128 = (price_diff * leverage * quantity_128) / 1000000;
-                assert!(pnl_128 <= 18446744073709551615, EPnLOverflow);
-                ((pnl_128 as u64), true) // Profit
-            } else {
-                let price_diff = ((current_price - entry_price) as u128);
-                let quantity_128 = (quantity as u128);
-                let pnl_128 = (price_diff * leverage * quantity_128) / 1000000;
-                assert!(pnl_128 <= 18446744073709551615, EPnLOverflow);
-                ((pnl_128 as u64), false) // Loss
-            }
-        }
     }
 
     /// Set stop-loss price
@@ -244,6 +383,27 @@ module margin_master::position {
     ) {
         position.is_copy_trade = true;
         position.original_position_id = option::some(original_position_id);
+    }
+
+    /// Package-internal: get mutable margin balance for flash liquidator
+    public(package) fun extract_margin<T>(position: Position<T>): (UID, Balance<T>, address) {
+        let Position {
+            id,
+            owner,
+            trading_pair: _,
+            position_type: _,
+            entry_price: _,
+            quantity: _,
+            leverage: _,
+            margin,
+            stop_loss_price: _,
+            take_profit_price: _,
+            is_copy_trade: _,
+            original_position_id: _,
+            opened_at: _,
+            is_closed: _,
+        } = position;
+        (id, margin, owner)
     }
 
     /// Transfer position ownership
@@ -305,6 +465,10 @@ module margin_master::position {
         position.leverage
     }
 
+    public fun margin_value<T>(position: &Position<T>): u64 {
+        balance::value(&position.margin)
+    }
+
     public fun is_long<T>(position: &Position<T>): bool {
         position.position_type == POSITION_LONG
     }
@@ -315,5 +479,13 @@ module margin_master::position {
 
     public fun is_copy_trade<T>(position: &Position<T>): bool {
         position.is_copy_trade
+    }
+
+    public fun is_closed<T>(position: &Position<T>): bool {
+        position.is_closed
+    }
+
+    public fun position_type<T>(position: &Position<T>): u8 {
+        position.position_type
     }
 }

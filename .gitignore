@@ -1,0 +1,12 @@
+node_modules
+.env
+.env.local
+.env.*.local
+.DS_Store
+dist/
+coverage/
+.idea/
+.vscode/
+*.log
+CLAUDE.md
+docs/demo/node_modules/

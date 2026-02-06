@@ -39,6 +39,29 @@ export interface CopyTradeExecutedEvent {
   timestamp: string; // u64 as string
 }
 
+export interface LiquidationEvent {
+  position_id: string;
+  owner: string;
+  liquidation_price: string; // u64 as string
+  loss: string; // u64 as string
+  timestamp: string; // u64 as string
+}
+
+export interface BatchCopyTradeExecutedEvent {
+  original_position_id: string;
+  trader: string;
+  follower_count: string; // u64 as string
+  timestamp: string; // u64 as string
+}
+
+export interface FlashLiquidationEvent {
+  position_id: string;
+  liquidator: string;
+  borrowed_amount: string; // u64 as string
+  liquidator_reward: string; // u64 as string
+  timestamp: string; // u64 as string
+}
+
 // ============================================================================
 // Position Struct
 // ============================================================================
@@ -122,17 +145,35 @@ export interface ExecuteCopyTradeArgs {
   follower_margin: TransactionArgument; // Coin<USDC>
 }
 
+export interface LiquidatePositionArgs {
+  position_id: TransactionArgument; // Position object
+  current_price: TransactionArgument; // u64
+  vault_id: TransactionArgument; // Vault object
+}
+
+export interface UpdateCopyRelationArgs {
+  trader_address: TransactionArgument; // address
+  new_copy_ratio: TransactionArgument; // u64 (basis points 1-10000)
+  new_max_position_size: TransactionArgument; // u64
+}
+
+export interface DeactivateCopyRelationArgs {
+  trader_address: TransactionArgument; // address
+}
+
 // ============================================================================
 // Contract Addresses & Constants
 // ============================================================================
 
 export const CONTRACT_ADDRESSES = {
-  PACKAGE_ID: '0xa769230f609d7e517af140150c409f98b74e2f090bf442e7877d6266b76e0696',
-  COPY_RELATION_REGISTRY_ID: '0x30d22a285503bab9a612f680272bfe3140896763e3eab2ba3679487b0f40f39d',
+  PACKAGE_ID: '0x361681e0d8b2fdca428a4c4afb9e27af251a0fc3b543e4cb8738d2510a449ca4',
+  COPY_RELATION_REGISTRY_ID: '0x452e7b7822f255e40f5df3d075d18b292a72cd315502a744598d45fb6f580672',
   POSITION_MODULE: 'position',
   VAULT_MODULE: 'vault',
   COPY_EXECUTOR_MODULE: 'copy_executor',
   EVENTS_MODULE: 'events',
+  FLASH_LIQUIDATOR_MODULE: 'flash_liquidator',
+  SUI_CLOCK_OBJECT_ID: '0x6',
 } as const;
 
 export const POSITION_TYPE = {

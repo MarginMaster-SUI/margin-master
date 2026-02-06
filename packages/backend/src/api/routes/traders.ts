@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { prisma } from '../../lib/prisma.js';
 
-export const tradersRouter = Router();
+export const tradersRouter: ReturnType<typeof Router> = Router();
 
 // Get trader stats by address
 tradersRouter.get('/:address/stats', async (req, res) => {

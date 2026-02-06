@@ -57,7 +57,7 @@ let suiClient: SuiGraphQLClient;
  */
 export function initializeSuiClient(): SuiGraphQLClient {
   const networkUrl = getSuiGraphQLUrl(SUI_NETWORK);
-  suiClient = new SuiGraphQLClient({ url: networkUrl });
+  suiClient = new SuiGraphQLClient({ url: networkUrl, network: SUI_NETWORK });
   logger.info({ network: SUI_NETWORK, url: networkUrl }, 'SUI GraphQL client initialized');
   return suiClient;
 }
@@ -119,12 +119,27 @@ interface LiquidationEvent {
   timestamp: string;
 }
 
+interface BatchCopyTradeExecutedEvent {
+  original_position_id: string;
+  trader: string;
+  follower_count: string;
+  timestamp: string;
+}
+
+interface FlashLiquidationEvent {
+  position_id: string;
+  liquidator: string;
+  borrowed_amount: string;
+  liquidator_reward: string;
+  timestamp: string;
+}
+
 /**
  * Handle PositionOpened event
  */
 async function handlePositionOpened(event: SuiEvent) {
   try {
-    const data = event.parsedJson as PositionOpenedEvent;
+    const data = event.parsedJson as unknown as PositionOpenedEvent;
 
     logger.info({ positionId: data.position_id, owner: data.owner }, 'Processing PositionOpened event');
 
@@ -206,7 +221,7 @@ async function handlePositionOpened(event: SuiEvent) {
  */
 async function handlePositionClosed(event: SuiEvent) {
   try {
-    const data = event.parsedJson as PositionClosedEvent;
+    const data = event.parsedJson as unknown as PositionClosedEvent;
 
     logger.info({ positionId: data.position_id }, 'Processing PositionClosed event');
 
@@ -274,7 +289,7 @@ async function handlePositionClosed(event: SuiEvent) {
  */
 async function handleCopyTradeExecuted(event: SuiEvent) {
   try {
-    const data = event.parsedJson as CopyTradeExecutedEvent;
+    const data = event.parsedJson as unknown as CopyTradeExecutedEvent;
 
     logger.info({
       originalPositionId: data.original_position_id,
@@ -351,7 +366,7 @@ async function handleCopyTradeExecuted(event: SuiEvent) {
  */
 async function handleLiquidation(event: SuiEvent) {
   try {
-    const data = event.parsedJson as LiquidationEvent;
+    const data = event.parsedJson as unknown as LiquidationEvent;
 
     logger.info({ positionId: data.position_id }, 'Processing Liquidation event');
 
@@ -407,6 +422,122 @@ async function handleLiquidation(event: SuiEvent) {
     logger.info({ positionId: data.position_id, loss: data.loss }, 'Liquidation event processed successfully');
   } catch (error) {
     logger.error({ error, event }, 'Error handling Liquidation event');
+    throw error;
+  }
+}
+
+/**
+ * Handle BatchCopyTradeExecuted event
+ */
+async function handleBatchCopyTradeExecuted(event: SuiEvent) {
+  try {
+    const data = event.parsedJson as unknown as BatchCopyTradeExecutedEvent;
+
+    logger.info({
+      originalPositionId: data.original_position_id,
+      trader: data.trader,
+      followerCount: data.follower_count,
+    }, 'Processing BatchCopyTradeExecuted event');
+
+    // Find trader user
+    const trader = await prisma.user.findFirst({
+      where: { suiAddress: data.trader },
+    });
+
+    if (!trader) {
+      logger.warn({ traderAddress: data.trader }, 'Trader user not found for batch event');
+      return;
+    }
+
+    // Create notification for trader
+    await prisma.notification.create({
+      data: {
+        userId: trader.id,
+        type: 'COPY_TRADE_EXECUTED',
+        title: 'Batch Copy Trades Executed',
+        message: `${data.follower_count} followers copied your trade`,
+        isRead: false,
+      },
+    });
+
+    logger.info({
+      originalPositionId: data.original_position_id,
+      followerCount: data.follower_count,
+    }, 'BatchCopyTradeExecuted event processed successfully');
+  } catch (error) {
+    logger.error({ error, event }, 'Error handling BatchCopyTradeExecuted event');
+    throw error;
+  }
+}
+
+/**
+ * Handle FlashLiquidation event
+ */
+async function handleFlashLiquidation(event: SuiEvent) {
+  try {
+    const data = event.parsedJson as unknown as FlashLiquidationEvent;
+
+    logger.info({
+      positionId: data.position_id,
+      liquidator: data.liquidator,
+    }, 'Processing FlashLiquidation event');
+
+    // Find position
+    const position = await prisma.position.findFirst({
+      where: { onChainPositionId: data.position_id },
+    });
+
+    if (!position) {
+      logger.warn({ positionId: data.position_id }, 'Position not found for flash liquidation');
+      return;
+    }
+
+    // Update position status (may already be LIQUIDATED from Liquidation event)
+    if (position.status !== 'LIQUIDATED') {
+      await prisma.position.update({
+        where: { id: position.id },
+        data: {
+          status: 'LIQUIDATED',
+          closedAt: new Date(parseInt(data.timestamp)),
+        },
+      });
+    }
+
+    // Create trade record for flash liquidation
+    await prisma.trade.create({
+      data: {
+        userId: position.userId,
+        positionId: position.id,
+        tradingPairId: position.tradingPairId,
+        tradeType: 'LIQUIDATION',
+        side: position.positionType,
+        price: position.entryPrice, // flash liquidation doesn't have a separate price field
+        quantity: position.quantity,
+        value: position.quantity * position.entryPrice,
+        fee: parseFloat(data.liquidator_reward) / 1000000,
+        pnl: -position.margin, // full margin loss on flash liquidation
+        txHash: event.id.txDigest,
+      },
+    });
+
+    // Create notification for position owner
+    await prisma.notification.create({
+      data: {
+        userId: position.userId,
+        type: 'POSITION_LIQUIDATED',
+        title: 'Position Flash Liquidated',
+        message: `Your ${position.positionType} position was flash liquidated. Liquidator reward: $${(parseFloat(data.liquidator_reward) / 1000000).toFixed(2)}`,
+        isRead: false,
+      },
+    });
+
+    logger.info({
+      positionId: data.position_id,
+      borrowedAmount: data.borrowed_amount,
+      liquidatorReward: data.liquidator_reward,
+    }, 'FlashLiquidation event processed successfully');
+  } catch (error) {
+    logger.error({ error, event }, 'Error handling FlashLiquidation event');
     throw error;
   }
 }
@@ -519,6 +650,8 @@ export async function startIndexer() {
     'PositionClosed': handlePositionClosed,
     'CopyTradeExecuted': handleCopyTradeExecuted,
     'Liquidation': handleLiquidation,
+    'BatchCopyTradeExecuted': handleBatchCopyTradeExecuted,
+    'FlashLiquidation': handleFlashLiquidation,
   };
 
   // Main polling loop

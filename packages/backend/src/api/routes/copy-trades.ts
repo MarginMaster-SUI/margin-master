@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { prisma } from '../../lib/prisma.js';
 
-export const copyTradesRouter = Router();
+export const copyTradesRouter: ReturnType<typeof Router> = Router();
 
 // Get copy relations for a user (as follower)
 copyTradesRouter.get('/my-relations/:address', async (req, res) => {

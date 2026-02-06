@@ -93,9 +93,90 @@ export function useTradingContract() {
     return result
   }
 
+  const liquidatePosition = async (args: {
+    positionId: string
+    currentPrice: number
+    vaultId: string
+  }) => {
+    if (!account) {
+      throw new Error('Wallet not connected')
+    }
+
+    const tx = new Transaction()
+
+    tx.moveCall({
+      target: `${CONTRACT_ADDRESSES.PACKAGE_ID}::${CONTRACT_ADDRESSES.POSITION_MODULE}::liquidate_position_entry`,
+      arguments: [
+        tx.object(args.positionId),
+        tx.pure.u64(Math.floor(args.currentPrice * 1_000_000)),
+        tx.object(args.vaultId),
+        tx.object(CONTRACT_ADDRESSES.SUI_CLOCK_OBJECT_ID),
+      ],
+    })
+
+    const result = await signAndExecute({
+      transaction: tx as any,
+    })
+
+    return result
+  }
+
+  const updateCopyRelation = async (args: {
+    traderAddress: string
+    newCopyRatio: number // basis points 1-10000
+    newMaxPositionSize: number // USDC
+  }) => {
+    if (!account) {
+      throw new Error('Wallet not connected')
+    }
+
+    const tx = new Transaction()
+
+    tx.moveCall({
+      target: `${CONTRACT_ADDRESSES.PACKAGE_ID}::${CONTRACT_ADDRESSES.COPY_EXECUTOR_MODULE}::update_copy_relation`,
+      arguments: [
+        tx.object(CONTRACT_ADDRESSES.COPY_RELATION_REGISTRY_ID),
+        tx.pure.address(args.traderAddress),
+        tx.pure.u64(args.newCopyRatio),
+        tx.pure.u64(Math.floor(args.newMaxPositionSize * 1_000_000)),
+      ],
+    })
+
+    const result = await signAndExecute({
+      transaction: tx as any,
+    })
+
+    return result
+  }
+
+  const deactivateCopyRelation = async (traderAddress: string) => {
+    if (!account) {
+      throw new Error('Wallet not connected')
+    }
+
+    const tx = new Transaction()
+
+    tx.moveCall({
+      target: `${CONTRACT_ADDRESSES.PACKAGE_ID}::${CONTRACT_ADDRESSES.COPY_EXECUTOR_MODULE}::deactivate_copy_relation`,
+      arguments: [
+        tx.object(CONTRACT_ADDRESSES.COPY_RELATION_REGISTRY_ID),
+        tx.pure.address(traderAddress),
+      ],
+    })
+
+    const result = await signAndExecute({
+      transaction: tx as any,
+    })
+
+    return result
+  }
+
   return {
     openPosition,
     closePosition,
     enableCopyTrade,
+    liquidatePosition,
+    updateCopyRelation,
+    deactivateCopyRelation,
   }
 }

@@ -55,8 +55,12 @@ export function PositionsList() {
       </div>
 
       {openPositions.length === 0 ? (
-        <div className="text-center py-8 text-gray-400">
-          No open positions. Start trading to see your positions here.
+        <div className="text-center py-12 text-gray-400">
+          <svg className="mx-auto mb-3 w-12 h-12 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 18L9 11.25l4.306 4.307a11.95 11.95 0 015.814-5.519l2.74-1.22m0 0l-5.94-2.28m5.94 2.28l-2.28 5.941" />
+          </svg>
+          <p className="text-sm font-medium text-gray-300 mb-1">No open positions</p>
+          <p className="text-xs">Open your first trade using the panel on the right</p>
         </div>
       ) : (
         <>

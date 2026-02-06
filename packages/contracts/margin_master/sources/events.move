@@ -2,6 +2,7 @@
 ///
 /// Defines all events emitted by the MarginMaster protocol.
 /// These events are consumed by the backend indexer for database synchronization.
+/// All emit functions are public(package) to prevent external fake event injection.
 
 module margin_master::events {
     use sui::event;
@@ -48,8 +49,25 @@ module margin_master::events {
         timestamp: u64,
     }
 
-    // Event emission functions
-    public fun emit_position_opened(
+    /// Emitted when a batch copy trade is executed
+    public struct BatchCopyTradeExecuted has copy, drop {
+        original_position_id: ID,
+        trader: address,
+        follower_count: u64,
+        timestamp: u64,
+    }
+
+    /// Emitted when a flash loan is initiated for liquidation
+    public struct FlashLiquidation has copy, drop {
+        position_id: ID,
+        liquidator: address,
+        borrowed_amount: u64,
+        liquidator_reward: u64,
+        timestamp: u64,
+    }
+
+    // Event emission functions - package-only to prevent fake events
+    public(package) fun emit_position_opened(
         position_id: ID,
         owner: address,
         trading_pair: vector<u8>,
@@ -73,7 +91,7 @@ module margin_master::events {
         });
     }
 
-    public fun emit_position_closed(
+    public(package) fun emit_position_closed(
         position_id: ID,
         owner: address,
         close_price: u64,
@@ -91,7 +109,7 @@ module margin_master::events {
         });
     }
 
-    public fun emit_copy_trade_executed(
+    public(package) fun emit_copy_trade_executed(
         original_position_id: ID,
         follower_position_id: ID,
         trader: address,
@@ -109,7 +127,7 @@ module margin_master::events {
         });
     }
 
-    public fun emit_liquidation(
+    public(package) fun emit_liquidation(
         position_id: ID,
         owner: address,
         liquidation_price: u64,
@@ -121,6 +139,36 @@ module margin_master::events {
             owner,
             liquidation_price,
             loss,
+            timestamp,
+        });
+    }
+
+    public(package) fun emit_batch_copy_trade_executed(
+        original_position_id: ID,
+        trader: address,
+        follower_count: u64,
+        timestamp: u64,
+    ) {
+        event::emit(BatchCopyTradeExecuted {
+            original_position_id,
+            trader,
+            follower_count,
+            timestamp,
+        });
+    }
+
+    public(package) fun emit_flash_liquidation(
+        position_id: ID,
+        liquidator: address,
+        borrowed_amount: u64,
+        liquidator_reward: u64,
+        timestamp: u64,
+    ) {
+        event::emit(FlashLiquidation {
+            position_id,
+            liquidator,
+            borrowed_amount,
+            liquidator_reward,
             timestamp,
         });
     }

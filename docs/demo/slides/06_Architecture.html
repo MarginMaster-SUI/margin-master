@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+html { background: #ffffff; }
+body {
+  width: 720pt; height: 405pt; margin: 0; padding: 40pt;
+  background: #ffffff; font-family: 'Helvetica', 'Arial', sans-serif;
+  display: flex; flex-direction: column;
+  color: #2d3748;
+}
+h1 { font-size: 32pt; margin: 0; color: #2c5282; }
+.flow-container { 
+  display: flex; align-items: center; justify-content: space-between; 
+  margin-top: 40pt; background: #ebf8ff; padding: 20pt; border-radius: 10pt;
+}
+.node { 
+  background: #ffffff; border: 2px solid #3182ce; padding: 15pt; 
+  border-radius: 8pt; text-align: center; width: 100pt;
+  font-weight: bold; font-size: 14pt; color: #2b6cb0;
+}
+.arrow { font-size: 24pt; color: #718096; }
+.highlight-text { margin-top: 30pt; font-size: 16pt; color: #4a5568; text-align: center; font-style: italic; }
+</style>
+</head>
+<body>
+  <div style="margin-bottom: 20pt; border-bottom: 3px solid #63b3ed; padding-bottom: 10pt;">
+    <h1>System Architecture</h1>
+  </div>
+  
+  <div class="flow-container">
+    <div class="node"><p>User</p></div>
+    <div class="arrow"><p>→</p></div>
+    <div class="node"><p>Sui<br>Contract</p></div>
+    <div class="arrow"><p>→</p></div>
+    <div class="node"><p>Event<br>Indexer</p></div>
+    <div class="arrow"><p>→</p></div>
+    <div class="node"><p>Copy<br>Execution</p></div>
+  </div>
+
+  <p class="highlight-text">"Sui's low latency makes real-time copy trading possible."</p>
+</body>
+</html>

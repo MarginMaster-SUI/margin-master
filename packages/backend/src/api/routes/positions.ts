@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { prisma } from '../../lib/prisma.js';
 
-export const positionsRouter = Router();
+export const positionsRouter: ReturnType<typeof Router> = Router();
 
 // Get positions for a user
 positionsRouter.get('/:address', async (req, res) => {

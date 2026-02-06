@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { prisma } from '../../lib/prisma.js';
 
-export const leaderboardRouter = Router();
+export const leaderboardRouter: ReturnType<typeof Router> = Router();
 
 leaderboardRouter.get('/', async (req, res) => {
   try {
