@@ -168,6 +168,8 @@ export interface DeactivateCopyRelationArgs {
 // Contract Addresses & Constants
 // ============================================================================
 
+export const USDC_TYPE = '0xa1ec7fc00a6f40db9693ad1415d0c193ad3906494428cf252621037bd7117e29::usdc::USDC' as const;
+
 export const CONTRACT_ADDRESSES = {
   PACKAGE_ID: '0x361681e0d8b2fdca428a4c4afb9e27af251a0fc3b543e4cb8738d2510a449ca4',
   COPY_RELATION_REGISTRY_ID: '0x452e7b7822f255e40f5df3d075d18b292a72cd315502a744598d45fb6f580672',
@@ -194,7 +196,7 @@ export const POSITION_STATUS = {
 export const USDC_DECIMALS = 6;
 
 // Maximum leverage allowed
-export const MAX_LEVERAGE = 100;
+export const MAX_LEVERAGE = 20;
 
 // Minimum margin required (in USDC base units)
 export const MIN_MARGIN = 1_000_000; // 1 USDC

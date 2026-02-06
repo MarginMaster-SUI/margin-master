@@ -10,7 +10,7 @@ function FieldError({ message }: { message?: string }) {
 }
 
 function LeverageIndicator({ value }: { value: number }) {
-  const level = value <= 10 ? 'low' : value <= 50 ? 'medium' : 'high'
+  const level = value <= 5 ? 'low' : value <= 10 ? 'medium' : 'high'
   const labels = { low: 'Low Risk', medium: 'Medium', high: 'High Risk' }
   const colors = {
     low: 'text-success-500',
@@ -22,15 +22,15 @@ function LeverageIndicator({ value }: { value: number }) {
     medium: 'bg-yellow-500',
     high: 'bg-danger-500',
   }
-  const pct = (value / 100) * 100
+  const pct = (value / 20) * 100
 
   return (
     <div className="mt-2 space-y-1">
       <div className="flex justify-between items-center">
         <div className="flex gap-1.5 text-xs text-gray-500">
           <span>1x</span>
-          <span className="mx-auto">50x</span>
-          <span>100x</span>
+          <span className="mx-auto">10x</span>
+          <span>20x</span>
         </div>
         <span className={`text-xs font-medium ${colors[level]}`}>{labels[level]}</span>
       </div>
@@ -120,8 +120,6 @@ export function TradingPanel() {
         quantity: positionSize / currentPrice,
         leverage: leverageNum,
         margin: marginNum,
-        stopLossPrice: stopLoss ? parseFloat(stopLoss) : undefined,
-        takeProfitPrice: takeProfit ? parseFloat(takeProfit) : undefined,
       })
 
       toast({ title: 'Position opened successfully!', type: 'success' })
@@ -210,7 +208,7 @@ export function TradingPanel() {
               value={leverage}
               onChange={(e) => setLeverage(e.target.value)}
               min="1"
-              max="100"
+              max="20"
               className="w-full accent-primary-500"
             />
             <LeverageIndicator value={leverageNum} />

@@ -1,61 +1,112 @@
-import { useCurrentAccount, useSignAndExecuteTransaction } from '@mysten/dapp-kit'
+import { useCurrentAccount, useSignAndExecuteTransaction, useSuiClient } from '@mysten/dapp-kit'
 import { Transaction } from '@mysten/sui/transactions'
-import { CONTRACT_ADDRESSES, POSITION_TYPE } from '@/types/sui-contracts'
+import { bcs } from '@mysten/sui/bcs'
+import { CONTRACT_ADDRESSES, POSITION_TYPE, USDC_TYPE } from '@/types/sui-contracts'
+
+const VAULT_TYPE = `${CONTRACT_ADDRESSES.PACKAGE_ID}::vault::Vault<${USDC_TYPE}>`
 
 export function useTradingContract() {
   const account = useCurrentAccount()
+  const suiClient = useSuiClient()
   const { mutateAsync: signAndExecute } = useSignAndExecuteTransaction()
 
+  /** Find user's existing Vault<USDC> object ID, or null */
+  const findVault = async (owner: string): Promise<string | null> => {
+    const res = await suiClient.getOwnedObjects({
+      owner,
+      filter: { StructType: VAULT_TYPE },
+      options: { showContent: true },
+    })
+    return res.data[0]?.data?.objectId ?? null
+  }
+
+  /**
+   * Open position in a single PTB:
+   * 1. If no vault → create_vault
+   * 2. Split USDC coin → deposit into vault
+   * 3. Call open_position_entry
+   */
   const openPosition = async (args: {
     tradingPair: string
     positionType: 'LONG' | 'SHORT'
     entryPrice: number
     quantity: number
     leverage: number
-    margin: number
-    stopLossPrice?: number
-    takeProfitPrice?: number
+    margin: number // in USDC display units (e.g. 10 = 10 USDC)
   }) => {
-    if (!account) {
-      throw new Error('Wallet not connected')
+    if (!account) throw new Error('Wallet not connected')
+
+    const marginBase = Math.floor(args.margin * 1_000_000)
+    const tx = new Transaction()
+    tx.setSender(account.address)
+
+    // --- Vault ---
+    let existingVaultId = await findVault(account.address)
+    let vaultArg: ReturnType<typeof tx.object>
+
+    if (existingVaultId) {
+      vaultArg = tx.object(existingVaultId)
+    } else {
+      // create_vault returns nothing (transfers to sender), so we need a 2-step approach:
+      // Call create_vault first, then in a separate TX...
+      // Actually create_vault is entry and transfers internally. We can't use the result.
+      // So we must check if vault exists first. If not, create it in a prior TX.
+      const createTx = new Transaction()
+      createTx.moveCall({
+        target: `${CONTRACT_ADDRESSES.PACKAGE_ID}::${CONTRACT_ADDRESSES.VAULT_MODULE}::create_vault`,
+        typeArguments: [USDC_TYPE],
+      })
+      await signAndExecute({ transaction: createTx as any })
+      // Wait a bit for indexer
+      await new Promise((r) => setTimeout(r, 2000))
+      existingVaultId = await findVault(account.address)
+      if (!existingVaultId) throw new Error('Failed to create vault')
+      vaultArg = tx.object(existingVaultId)
     }
 
-    const tx = new Transaction()
+    // --- Split USDC coin for deposit ---
+    const coins = await suiClient.getCoins({ owner: account.address, coinType: USDC_TYPE })
+    if (!coins.data.length) throw new Error('No USDC coins found')
 
-    // Call open_position function
+    // Merge all USDC coins then split the margin amount
+    const [primaryCoin, ...restCoins] = coins.data.map((c) => c.coinObjectId)
+    if (restCoins.length > 0) {
+      tx.mergeCoins(tx.object(primaryCoin), restCoins.map((id) => tx.object(id)))
+    }
+    const [depositCoin] = tx.splitCoins(tx.object(primaryCoin), [marginBase])
+
+    // Deposit into vault
     tx.moveCall({
-      target: `${CONTRACT_ADDRESSES.PACKAGE_ID}::${CONTRACT_ADDRESSES.POSITION_MODULE}::open_position`,
+      target: `${CONTRACT_ADDRESSES.PACKAGE_ID}::${CONTRACT_ADDRESSES.VAULT_MODULE}::deposit_entry`,
+      typeArguments: [USDC_TYPE],
+      arguments: [vaultArg, depositCoin],
+    })
+
+    // --- Open position ---
+    const pairBytes = new TextEncoder().encode(args.tradingPair)
+
+    tx.moveCall({
+      target: `${CONTRACT_ADDRESSES.PACKAGE_ID}::${CONTRACT_ADDRESSES.POSITION_MODULE}::open_position_entry`,
+      typeArguments: [USDC_TYPE],
       arguments: [
-        tx.pure.string(args.tradingPair),
+        vaultArg,
+        tx.pure(bcs.vector(bcs.u8()).serialize(pairBytes)),
         tx.pure.u8(args.positionType === 'LONG' ? POSITION_TYPE.LONG : POSITION_TYPE.SHORT),
         tx.pure.u64(Math.floor(args.entryPrice * 1_000_000)),
         tx.pure.u64(Math.floor(args.quantity * 1_000_000)),
         tx.pure.u8(args.leverage),
-        tx.pure.u64(Math.floor(args.margin * 1_000_000)),
-        // Optional stop loss and take profit
-        args.stopLossPrice
-          ? tx.pure.option('u64', Math.floor(args.stopLossPrice * 1_000_000))
-          : tx.pure.option('u64', null),
-        args.takeProfitPrice
-          ? tx.pure.option('u64', Math.floor(args.takeProfitPrice * 1_000_000))
-          : tx.pure.option('u64', null),
+        tx.pure.u64(marginBase),
+        tx.object(CONTRACT_ADDRESSES.SUI_CLOCK_OBJECT_ID),
       ],
     })
 
-    const result = await signAndExecute({
-      transaction: tx as any,
-    })
-
-    return result
+    return await signAndExecute({ transaction: tx as any })
   }
 
   const closePosition = async (positionId: string, closePrice: number) => {
-    if (!account) {
-      throw new Error('Wallet not connected')
-    }
+    if (!account) throw new Error('Wallet not connected')
 
     const tx = new Transaction()
-
     tx.moveCall({
       target: `${CONTRACT_ADDRESSES.PACKAGE_ID}::${CONTRACT_ADDRESSES.POSITION_MODULE}::close_position`,
       arguments: [
@@ -64,20 +115,13 @@ export function useTradingContract() {
       ],
     })
 
-    const result = await signAndExecute({
-      transaction: tx as any,
-    })
-
-    return result
+    return await signAndExecute({ transaction: tx as any })
   }
 
   const addCopyRelation = async (traderAddress: string, copyRatio: number, maxPositionSize: number) => {
-    if (!account) {
-      throw new Error('Wallet not connected')
-    }
+    if (!account) throw new Error('Wallet not connected')
 
     const tx = new Transaction()
-
     tx.moveCall({
       target: `${CONTRACT_ADDRESSES.PACKAGE_ID}::${CONTRACT_ADDRESSES.COPY_EXECUTOR_MODULE}::add_copy_relation`,
       arguments: [
@@ -89,11 +133,7 @@ export function useTradingContract() {
       ],
     })
 
-    const result = await signAndExecute({
-      transaction: tx as any,
-    })
-
-    return result
+    return await signAndExecute({ transaction: tx as any })
   }
 
   const liquidatePosition = async (args: {
@@ -101,12 +141,9 @@ export function useTradingContract() {
     currentPrice: number
     vaultId: string
   }) => {
-    if (!account) {
-      throw new Error('Wallet not connected')
-    }
+    if (!account) throw new Error('Wallet not connected')
 
     const tx = new Transaction()
-
     tx.moveCall({
       target: `${CONTRACT_ADDRESSES.PACKAGE_ID}::${CONTRACT_ADDRESSES.POSITION_MODULE}::liquidate_position_entry`,
       arguments: [
@@ -117,24 +154,17 @@ export function useTradingContract() {
       ],
     })
 
-    const result = await signAndExecute({
-      transaction: tx as any,
-    })
-
-    return result
+    return await signAndExecute({ transaction: tx as any })
   }
 
   const updateCopyRelation = async (args: {
     traderAddress: string
-    newCopyRatio: number // basis points 1-10000
-    newMaxPositionSize: number // USDC
+    newCopyRatio: number
+    newMaxPositionSize: number
   }) => {
-    if (!account) {
-      throw new Error('Wallet not connected')
-    }
+    if (!account) throw new Error('Wallet not connected')
 
     const tx = new Transaction()
-
     tx.moveCall({
       target: `${CONTRACT_ADDRESSES.PACKAGE_ID}::${CONTRACT_ADDRESSES.COPY_EXECUTOR_MODULE}::update_copy_relation`,
       arguments: [
@@ -145,20 +175,13 @@ export function useTradingContract() {
       ],
     })
 
-    const result = await signAndExecute({
-      transaction: tx as any,
-    })
-
-    return result
+    return await signAndExecute({ transaction: tx as any })
   }
 
   const deactivateCopyRelation = async (traderAddress: string) => {
-    if (!account) {
-      throw new Error('Wallet not connected')
-    }
+    if (!account) throw new Error('Wallet not connected')
 
     const tx = new Transaction()
-
     tx.moveCall({
       target: `${CONTRACT_ADDRESSES.PACKAGE_ID}::${CONTRACT_ADDRESSES.COPY_EXECUTOR_MODULE}::deactivate_copy_relation`,
       arguments: [
@@ -167,11 +190,7 @@ export function useTradingContract() {
       ],
     })
 
-    const result = await signAndExecute({
-      transaction: tx as any,
-    })
-
-    return result
+    return await signAndExecute({ transaction: tx as any })
   }
 
   return {
@@ -181,5 +200,6 @@ export function useTradingContract() {
     liquidatePosition,
     updateCopyRelation,
     deactivateCopyRelation,
+    findVault,
   }
 }

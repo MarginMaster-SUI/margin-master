@@ -66,6 +66,10 @@ export const api = {
     return fetchApi(`/api/traders/${address}/stats`);
   },
 
+  getPositions(address: string): Promise<any[]> {
+    return fetchApi(`/api/positions/${address}`);
+  },
+
   registerCopyTrade(data: {
     traderAddress: string;
     followerAddress: string;

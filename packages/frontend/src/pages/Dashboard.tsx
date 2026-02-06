@@ -3,9 +3,11 @@ import { MarketOverview } from '@/components/MarketOverview'
 import { TradingPanel } from '@/components/TradingPanel'
 import { PositionsList } from '@/components/PositionsList'
 import { PriceChart } from '@/components/PriceChart'
+import { usePositions } from '@/hooks/usePositions'
 
 export function Dashboard() {
   const account = useCurrentAccount()
+  usePositions()
 
   return (
     <>
