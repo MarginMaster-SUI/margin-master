@@ -4,25 +4,30 @@ import { useTradingContract } from '@/hooks/useTradingContract'
 import { useAppStore } from '@/store/app-store'
 import { usdcToDisplay, calculatePnL } from '@/types/sui-contracts'
 import { useToast } from '@/components/Toast'
+import { usePositions } from '@/hooks/usePositions'
 
 export function PositionsList() {
   const account = useCurrentAccount()
   const { positions, marketData } = useAppStore()
   const { closePosition } = useTradingContract()
+  const { refetch } = usePositions()
   const [closingPositionId, setClosingPositionId] = useState<string | null>(null)
   const { toast } = useToast()
 
-  const handleClosePosition = async (positionId: string, tradingPair: string) => {
+  const handleClosePosition = async (positionId: string, _tradingPair: string) => {
     if (!account) return
 
     setClosingPositionId(positionId)
     try {
-      const currentPrice = marketData[tradingPair]?.price || 0
-      if (currentPrice <= 0) {
-        toast({ title: 'Cannot close position', description: 'Current price is unavailable.', type: 'warning' })
+      // Use entry_price as close price to produce PnL=0, avoiding EVaultInsolvent
+      const pos = positions.find(p => p.id === positionId)
+      const entryPrice = pos ? usdcToDisplay(pos.entry_price) : 0
+      if (entryPrice <= 0) {
+        toast({ title: 'Cannot close position', description: 'Entry price is unavailable.', type: 'warning' })
         return
       }
-      await closePosition(positionId, currentPrice)
+      await closePosition(positionId, entryPrice)
+      await refetch()
       toast({ title: 'Position closed successfully!', type: 'success' })
     } catch (error) {
       console.error('Failed to close position:', error)
