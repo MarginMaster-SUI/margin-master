@@ -86,9 +86,18 @@ export function useTradingContract() {
                 `Please wait 30-60 seconds and try again. TX: ${createResult.digest?.slice(0, 10)}...`,
             )
           } else {
-            // TX failed on-chain
+            // TX failed on-chain - log full details for debugging
+            console.error('Vault creation TX failed:', {
+              digest: createResult.digest,
+              status: txBlock.effects?.status,
+              gasUsed: txBlock.effects?.gasUsed,
+              fullTx: txBlock,
+            })
             const errorMsg = txBlock.effects?.status?.error || 'Unknown error'
-            throw new Error(`Vault creation failed: ${errorMsg}. TX: ${createResult.digest?.slice(0, 10)}...`)
+            throw new Error(
+              `Vault creation failed: ${errorMsg}. ` +
+                `Full TX: ${createResult.digest} - Check browser console for details.`,
+            )
           }
         } catch (queryError: any) {
           // Re-throw our custom messages
