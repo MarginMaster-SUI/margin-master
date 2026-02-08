@@ -2,24 +2,84 @@ import { useCurrentAccount, useSignAndExecuteTransaction, useSuiClient } from '@
 import { Transaction } from '@mysten/sui/transactions'
 import { CONTRACT_ADDRESSES, USDC_TYPE } from '@/types/sui-contracts'
 
-const TRADING_BOT_TYPE = `${CONTRACT_ADDRESSES.PACKAGE_ID}::trading_bot::TradingBot<${USDC_TYPE}>`
-
 export function useTradingBot() {
   const account = useCurrentAccount()
   const suiClient = useSuiClient()
   const { mutateAsync: signAndExecute } = useSignAndExecuteTransaction()
 
-  /** Find user's TradingBot objects */
+  /** Find user's TradingBot objects (shared objects owned by user) */
   const findBots = async (owner: string): Promise<Array<{ id: string; data: any }>> => {
-    const res = await suiClient.getOwnedObjects({
-      owner,
-      filter: { StructType: TRADING_BOT_TYPE },
-      options: { showContent: true },
-    })
-    return res.data.map((obj) => ({
-      id: obj.data?.objectId ?? '',
-      data: (obj.data?.content as any)?.fields ?? {},
-    }))
+    try {
+      // TradingBot is shared object, need to query via TradingBotRegistry dynamic fields
+      const registry = await suiClient.getObject({
+        id: CONTRACT_ADDRESSES.TRADING_BOT_REGISTRY_ID,
+        options: { showContent: true },
+      })
+
+      if (!registry.data?.content || registry.data.content.dataType !== 'moveObject') {
+        return []
+      }
+
+      const fields = registry.data.content.fields as any
+      const traderToBotsTableId = fields.trader_to_bots?.fields?.id?.id
+
+      if (!traderToBotsTableId) return []
+
+      // Fetch all dynamic fields (trader -> bot IDs mapping)
+      let allBotIds: string[] = []
+      let hasNextPage = true
+      let cursor: string | null = null
+
+      while (hasNextPage) {
+        const dynamicFields = await suiClient.getDynamicFields({
+          parentId: traderToBotsTableId,
+          cursor,
+        })
+
+        for (const field of dynamicFields.data) {
+          const fieldData = await suiClient.getDynamicFieldObject({
+            parentId: traderToBotsTableId,
+            name: field.name,
+          })
+
+          if (fieldData.data?.content && fieldData.data.content.dataType === 'moveObject') {
+            const botIdsVector = (fieldData.data.content.fields as any)?.value
+            // Handle vector<ID> - could be array of strings or objects with 'id' field
+            if (Array.isArray(botIdsVector)) {
+              const ids = botIdsVector.map((item) =>
+                typeof item === 'string' ? item : item?.id ?? item
+              )
+              allBotIds.push(...ids.filter((id) => typeof id === 'string'))
+            }
+          }
+        }
+
+        hasNextPage = dynamicFields.hasNextPage
+        cursor = dynamicFields.nextCursor ?? null
+      }
+
+      if (allBotIds.length === 0) return []
+
+      // Fetch all bot objects and filter by owner
+      const botObjects = await suiClient.multiGetObjects({
+        ids: allBotIds,
+        options: { showContent: true },
+      })
+
+      return botObjects
+        .filter((obj) => {
+          if (!obj.data?.content || obj.data.content.dataType !== 'moveObject') return false
+          const botOwner = (obj.data.content.fields as any)?.owner
+          return botOwner === owner
+        })
+        .map((obj) => ({
+          id: obj.data!.objectId,
+          data: (obj.data!.content as any)?.fields ?? {},
+        }))
+    } catch (error) {
+      console.error('Error finding bots:', error)
+      return []
+    }
   }
 
   /** Create a new TradingBot following a trader */
