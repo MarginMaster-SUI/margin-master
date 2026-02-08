@@ -132,7 +132,7 @@ export function PositionsList() {
                             pnl.isProfit ? 'text-success-500' : 'text-danger-500'
                           }`}
                         >
-                          {pnl.isProfit ? '+' : '-'}${pnlDisplay.toFixed(2)}
+                          {pnl.isProfit ? '+' : '-'}${pnlDisplay.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                         </span>
                       </td>
                       <td className="py-4">
@@ -185,7 +185,7 @@ export function PositionsList() {
                         pnl.isProfit ? 'text-success-500' : 'text-danger-500'
                       }`}
                     >
-                      {pnl.isProfit ? '+' : '-'}${pnlDisplay.toFixed(2)}
+                      {pnl.isProfit ? '+' : '-'}${pnlDisplay.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </span>
                   </div>
                   <div className="grid grid-cols-2 gap-2 text-sm">

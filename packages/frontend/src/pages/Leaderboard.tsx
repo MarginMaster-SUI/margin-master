@@ -4,6 +4,7 @@ import { useCurrentAccount } from '@mysten/dapp-kit'
 import { api, LeaderboardEntry } from '@/services/api'
 import { CopyTradeModal } from '@/components/CopyTradeModal'
 import { LeaderboardSkeleton } from '@/components/Skeleton'
+import { useFollowingTraders } from '@/hooks/useFollowingTraders'
 
 type SortField = 'totalPnL' | 'winRate' | 'totalTrades' | 'followerCount'
 
@@ -11,6 +12,7 @@ export function Leaderboard() {
   const account = useCurrentAccount()
   const [sortBy, setSortBy] = useState<SortField>('totalPnL')
   const [selectedTrader, setSelectedTrader] = useState<LeaderboardEntry | null>(null)
+  const { isFollowing } = useFollowingTraders()
 
   const { data: leaders, isLoading } = useQuery({
     queryKey: ['leaderboard', sortBy],
@@ -94,8 +96,15 @@ export function Leaderboard() {
                           {(trader.username || trader.address)?.[0]?.toUpperCase() || '?'}
                         </div>
                         <div>
-                          <div className="text-white font-medium">
-                            {trader.username || (trader.address ? `${trader.address.slice(0, 6)}...${trader.address.slice(-4)}` : 'Unknown')}
+                          <div className="flex items-center gap-2">
+                            <span className="text-white font-medium">
+                              {trader.username || (trader.address ? `${trader.address.slice(0, 6)}...${trader.address.slice(-4)}` : 'Unknown')}
+                            </span>
+                            {isFollowing(trader.address) && (
+                              <span className="px-2 py-0.5 bg-green-500/20 text-green-400 text-xs rounded-full">
+                                Following
+                              </span>
+                            )}
                           </div>
                           <div className="text-xs text-gray-500">
                             {trader.address ? `${trader.address.slice(0, 6)}...${trader.address.slice(-4)}` : ''}
@@ -105,7 +114,7 @@ export function Leaderboard() {
                     </td>
                     <td className="py-4">
                       <span className={`font-semibold ${trader.totalPnL >= 0 ? 'text-success-500' : 'text-danger-500'}`}>
-                        {trader.totalPnL >= 0 ? '+' : ''}${trader.totalPnL.toFixed(2)}
+                        {trader.totalPnL >= 0 ? '+' : '-'}${Math.abs(trader.totalPnL).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                       </span>
                     </td>
                     <td className="py-4 text-gray-300">
@@ -117,9 +126,13 @@ export function Leaderboard() {
                       {account && account.address !== trader.address && (
                         <button
                           onClick={() => setSelectedTrader(trader)}
-                          className="px-3 py-1.5 bg-primary-600 hover:bg-primary-700 text-white text-sm rounded-lg transition-all active:scale-95"
+                          className={`px-3 py-1.5 text-white text-sm rounded-lg transition-all active:scale-95 ${
+                            isFollowing(trader.address)
+                              ? 'bg-gray-700 hover:bg-gray-600'
+                              : 'bg-primary-600 hover:bg-primary-700'
+                          }`}
                         >
-                          Copy
+                          {isFollowing(trader.address) ? 'Manage' : 'Copy'}
                         </button>
                       )}
                     </td>
