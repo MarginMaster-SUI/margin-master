@@ -93,6 +93,12 @@ export function BotManagement() {
     loadFollowedTraders()
   }, [account?.address])
 
+  // Helper to refresh bots with retry for indexer lag
+  const refreshBotsWithRetry = async () => {
+    await loadBots()
+    setTimeout(() => loadBots(), 3000)
+  }
+
   const handleCreateBot = async () => {
     const finalTrader = useCustomAddress ? traderAddress : selectedTrader
     if (!finalTrader) {
@@ -109,13 +115,16 @@ export function BotManagement() {
         minHoldDuration: parseInt(minHoldDuration),
         dailyLossLimit: parseFloat(dailyLossLimit),
       })
+
+      // Refresh bots with retry for indexer lag
+      await refreshBotsWithRetry()
+
       toast({ title: 'Bot created successfully!', type: 'success' })
       setShowCreateModal(false)
       // Reset form
       setSelectedTrader('')
       setTraderAddress('')
       setUseCustomAddress(false)
-      await loadBots()
     } catch (err: any) {
       toast({ title: 'Failed to create bot', description: err.message, type: 'error' })
     } finally {
@@ -131,7 +140,7 @@ export function BotManagement() {
       toast({ title: 'Deposit successful!', type: 'success' })
       setDepositAmount('')
       setSelectedBot(null)
-      await loadBots()
+      await refreshBotsWithRetry()
     } catch (err: any) {
       toast({ title: 'Deposit failed', description: err.message, type: 'error' })
     } finally {
@@ -147,7 +156,7 @@ export function BotManagement() {
       toast({ title: 'Withdrawal successful!', type: 'success' })
       setWithdrawAmount('')
       setSelectedBot(null)
-      await loadBots()
+      await refreshBotsWithRetry()
     } catch (err: any) {
       toast({ title: 'Withdrawal failed', description: err.message, type: 'error' })
     } finally {
@@ -160,7 +169,7 @@ export function BotManagement() {
     try {
       await activateBot(botId)
       toast({ title: 'Bot activated!', type: 'success' })
-      await loadBots()
+      await refreshBotsWithRetry()
     } catch (err: any) {
       toast({ title: 'Activation failed', description: err.message, type: 'error' })
     } finally {
@@ -173,7 +182,7 @@ export function BotManagement() {
     try {
       await deactivateBot(botId)
       toast({ title: 'Bot deactivated!', type: 'success' })
-      await loadBots()
+      await refreshBotsWithRetry()
     } catch (err: any) {
       toast({ title: 'Deactivation failed', description: err.message, type: 'error' })
     } finally {
@@ -188,7 +197,7 @@ export function BotManagement() {
     try {
       await destroyBot(botId)
       toast({ title: 'Bot destroyed!', type: 'success' })
-      await loadBots()
+      await refreshBotsWithRetry()
     } catch (err: any) {
       toast({ title: 'Destroy failed', description: err.message, type: 'error' })
     } finally {
