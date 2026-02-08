@@ -271,3 +271,21 @@ public entry fun withdraw_entry<T>(vault: &mut Vault<T>, amount: u64, ctx: &mut 
     let withdrawn_coin = withdraw(vault, amount, ctx);
     transfer::public_transfer(withdrawn_coin, tx_context::sender(ctx));
 }
+
+/// Destroy an empty vault (for bot destruction)
+public fun destroy_empty<T>(vault: Vault<T>) {
+    let Vault {
+        id,
+        owner: _,
+        balance,
+        committed_margin,
+        available_liquidity,
+    } = vault;
+
+    assert!(balance::value(&balance) == 0, EInsufficientBalance);
+    assert!(committed_margin == 0, EVaultInsolvent);
+    assert!(available_liquidity == 0, EVaultInsolvent);
+
+    balance::destroy_zero(balance);
+    object::delete(id);
+}

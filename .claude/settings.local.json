@@ -12,7 +12,13 @@
       "Bash(git status:*)",
       "Bash(npx prisma db seed:*)",
       "Bash(npx prisma migrate reset:*)",
-      "Bash(curl:*)"
+      "Bash(curl:*)",
+      "Bash(sui move build:*)",
+      "Bash(sui move test:*)",
+      "Bash(sui client:*)",
+      "Bash(tee:*)",
+      "Bash(git init:*)",
+      "Bash(git --version)"
     ]
   }
 }

@@ -103,22 +103,25 @@ CopyTradeExecution (記錄)
 
 ## 核心模組實現
 
-### 1. copy_executor.move (跟單執行模組)
-
-本模組負責執行跟單交易，是自動化跟單的核心。為了實現「無人值守」的自動化跟單，本模組使用了 `Vault` 和 `Position` 模組提供的 **Package-Protected** 委派函數。
+### 1. copy_trade.move (跟單管理模組)
 
 ```move
-// sources/copy_executor.move
+// sources/copy_trade.move
 
 module margin_master::copy_executor {
     use sui::object::{Self, UID, ID};
     use sui::tx_context::{Self, TxContext};
     use sui::event;
     use sui::table::{Self, Table};
-    use sui::clock::Clock;
+    use sui::coin::{Self, Coin};
+    use sui::sui::SUI;
+    use sui::balance::{Self, Balance};
+    use std::option::{Self, Option};
+
     use margin_master::trader_profile::{Self, TraderProfile};
-    use margin_master::vault::{Self, Vault};
-    use margin_master::position::{Self, Position};
+    use margin_master::fee_manager;
+    use margin_master::risk_checker;
+    use margin_master::emergency_pause::{Self, EmergencyPause};
 
     // ==================== 錯誤碼 ====================
 
@@ -127,116 +130,563 @@ module margin_master::copy_executor {
     const E_INVALID_FEE_RATE: u64 = 3;
     const E_RELATION_ALREADY_EXISTS: u64 = 4;
     const E_RELATION_NOT_FOUND: u64 = 5;
-    const EUnauthorizedVault: u64 = 6; // Critical: 防止 Vault 盜用
+    const E_RISK_TOO_HIGH: u64 = 6;
+    const E_INSUFFICIENT_BALANCE: u64 = 7;
+    const E_SYSTEM_PAUSED: u64 = 8;
+    const E_INVALID_QUANTITY: u64 = 9;
+    const E_LEADER_SAME_AS_FOLLOWER: u64 = 10;
+
+    // ==================== 常數 ====================
+
+    const MIN_RISK_RATIO_BPS: u64 = 12000;     // 1.2x (120%)
+    const MAX_COPY_RATIO_BPS: u64 = 10000;     // 100%
+    const MAX_FEE_RATE_BPS: u64 = 1000;        // 10%
+    const BPS_DENOMINATOR: u64 = 10000;
+    const MIN_COPY_QUANTITY: u64 = 1000;       // 最小跟單數量
 
     // ==================== 數據結構 ====================
 
-    /// 跟單關係註冊表
-    struct CopyRelationRegistry has key {
+    /// 跟單關係
+    struct CopyTradeRelation has key, store {
         id: UID,
-        // leader -> followers
-        leader_to_followers: Table<address, vector<address>>, 
-        // follower -> leaders
-        follower_to_leaders: Table<address, vector<address>>,
+        leader: address,
+        follower: address,
+        copy_ratio: u64,            // Basis points (0-10000)
+        max_position_size: u64,     // 單筆最大倉位
+        fee_rate: u64,              // Basis points
+        is_active: bool,
+        created_at: u64,
+        total_copied_trades: u64,
+        total_fees_paid: u64,
+        last_copy_at: u64,
     }
 
-    /// 跟單關係 (詳細欄位省略，參考原始碼)
-    struct CopyRelation has store {
+    /// 跟單關係註冊表（全局共享對象）
+    struct CopyTradeRegistry has key {
+        id: UID,
+        // leader => vector<follower addresses>
+        leader_to_followers: Table<address, vector<address>>,
+        // follower => vector<leader addresses>
+        follower_to_leaders: Table<address, vector<address>>,
+        total_relations: u64,
+        total_active_relations: u64,
+    }
+
+    /// 費用配置（全局共享對象）
+    struct FeeConfig has key {
+        id: UID,
+        protocol_fee_rate: u64,      // Protocol 抽成 (basis points)
+        treasury: address,           // Protocol treasury 地址
+        total_fees_collected: u64,   // 累計收取的費用
+    }
+
+    // ==================== 事件 ====================
+
+    /// Leader 交易信號事件
+    struct LeaderTradeSignal has copy, drop {
+        leader: address,
+        pool_id: ID,
+        side: bool,                  // true = BUY, false = SELL
+        order_type: u8,              // 0 = MARKET, 1 = LIMIT
+        price: Option<u64>,
+        quantity: u64,
+        leverage: u8,
+        timestamp: u64,
+        tx_digest: vector<u8>,       // 交易哈希
+    }
+
+    /// 跟單執行事件
+    struct CopyTradeExecuted has copy, drop {
+        leader: address,
+        follower: address,
+        original_quantity: u64,
+        copied_quantity: u64,
+        copy_ratio: u64,
+        fee_paid: u64,
+        success: bool,
+        timestamp: u64,
+    }
+
+    /// 跟單失敗事件
+    struct CopyTradeFailed has copy, drop {
+        leader: address,
+        follower: address,
+        reason: u8,                  // 1=RiskTooHigh, 2=InsufficientBalance, 3=Other
+        timestamp: u64,
+    }
+
+    /// 跟單關係創建事件
+    struct CopyRelationCreated has copy, drop {
         leader: address,
         follower: address,
         copy_ratio: u64,
         max_position_size: u64,
-        is_active: bool,
+        fee_rate: u64,
+        timestamp: u64,
     }
 
-    // ==================== 核心功能：自動化跟單 ====================
+    /// 跟單關係更新事件
+    struct CopyRelationUpdated has copy, drop {
+        leader: address,
+        follower: address,
+        new_copy_ratio: u64,
+        new_max_position_size: u64,
+        new_fee_rate: u64,
+        timestamp: u64,
+    }
 
-    /// 執行跟單交易 (單筆)
-    /// 
-    /// **安全性機制**：
-    /// 1. 不檢查 `sender`，而是檢查 `vault::owner(follower_vault)` 是否為授權的 Follower。
-    /// 2. 使用 `vault::deduct_margin_delegated` 和 `position::open_position_delegated` 
-    ///    實現免簽自動化。
-    public fun execute_copy_trade<T>(
-        registry: &CopyRelationRegistry,
-        original_position_id: ID,
-        trader: address, // Leader
-        follower_vault: &mut Vault<T>,
-        trading_pair: vector<u8>,
-        position_type: u8,
-        entry_price: u64,
-        trader_quantity: u64,
-        leverage: u8,
+    /// 跟單關係停止事件
+    struct CopyRelationStopped has copy, drop {
+        leader: address,
+        follower: address,
+        total_trades_copied: u64,
+        total_fees_paid: u64,
+        timestamp: u64,
+    }
+
+    // ==================== 初始化 ====================
+
+    /// 模組初始化函數（僅在部署時調用一次）
+    fun init(ctx: &mut TxContext) {
+        // 創建全局註冊表
+        let registry = CopyTradeRegistry {
+            id: object::new(ctx),
+            leader_to_followers: table::new(ctx),
+            follower_to_leaders: table::new(ctx),
+            total_relations: 0,
+            total_active_relations: 0,
+        };
+        transfer::share_object(registry);
+
+        // 創建費用配置
+        let fee_config = FeeConfig {
+            id: object::new(ctx),
+            protocol_fee_rate: 500,     // 5%
+            treasury: tx_context::sender(ctx),
+            total_fees_collected: 0,
+        };
+        transfer::share_object(fee_config);
+    }
+
+    // ==================== 核心功能 ====================
+
+    /// 創建跟單關係
+    public entry fun create_copy_relation(
+        registry: &mut CopyTradeRegistry,
+        pause: &EmergencyPause,
+        leader: address,
         copy_ratio: u64,
-        clock: &Clock,
-        ctx: &mut TxContext,
-    ): Position<T> {
-        // ... (省略部分邏輯)
-        
-        // 1. 安全檢查：確認 Vault 屬於該關係的 Follower
-        let follower_address = vault::owner(follower_vault);
-        
-        // ... (驗證關係有效性)
+        max_position_size: u64,
+        fee_rate: u64,
+        ctx: &mut TxContext
+    ) {
+        // 檢查系統是否暫停
+        emergency_pause::assert_not_paused(pause);
 
-        // 2. 調用 Delegated Functions 進行自動化操作
-        //    這會直接扣除 Vault 餘額並開設屬於 Vault Owner 的倉位
-        let follower_position = position::open_position_delegated(
-            follower_vault,
-            trading_pair,
-            position_type,
-            entry_price,
-            follower_quantity,
-            leverage,
-            follower_margin,
-            clock,
-            ctx,
+        let follower = tx_context::sender(ctx);
+
+        // 參數驗證
+        assert!(copy_ratio > 0 && copy_ratio <= MAX_COPY_RATIO_BPS, E_INVALID_COPY_RATIO);
+        assert!(fee_rate <= MAX_FEE_RATE_BPS, E_INVALID_FEE_RATE);
+        assert!(leader != follower, E_LEADER_SAME_AS_FOLLOWER);
+        assert!(max_position_size > 0, E_INVALID_QUANTITY);
+
+        // 檢查是否已存在關係
+        if (table::contains(&registry.leader_to_followers, leader)) {
+            let followers = table::borrow(&registry.leader_to_followers, leader);
+            assert!(!vector::contains(followers, &follower), E_RELATION_ALREADY_EXISTS);
+        };
+
+        // 創建關係對象
+        let relation = CopyTradeRelation {
+            id: object::new(ctx),
+            leader,
+            follower,
+            copy_ratio,
+            max_position_size,
+            fee_rate,
+            is_active: true,
+            created_at: tx_context::epoch(ctx),
+            total_copied_trades: 0,
+            total_fees_paid: 0,
+            last_copy_at: 0,
+        };
+
+        // 更新註冊表
+        update_registry_on_create(registry, leader, follower);
+
+        // 發出事件
+        event::emit(CopyRelationCreated {
+            leader,
+            follower,
+            copy_ratio,
+            max_position_size,
+            fee_rate,
+            timestamp: tx_context::epoch(ctx),
+        });
+
+        // 轉移關係對象給 follower
+        transfer::transfer(relation, follower);
+    }
+
+    /// 更新跟單關係參數
+    public entry fun update_copy_relation(
+        relation: &mut CopyTradeRelation,
+        new_copy_ratio: u64,
+        new_max_position_size: u64,
+        new_fee_rate: u64,
+        ctx: &mut TxContext
+    ) {
+        // 權限檢查
+        assert!(relation.follower == tx_context::sender(ctx), E_UNAUTHORIZED);
+        assert!(relation.is_active, E_RELATION_NOT_FOUND);
+
+        // 參數驗證
+        assert!(new_copy_ratio > 0 && new_copy_ratio <= MAX_COPY_RATIO_BPS, E_INVALID_COPY_RATIO);
+        assert!(new_fee_rate <= MAX_FEE_RATE_BPS, E_INVALID_FEE_RATE);
+        assert!(new_max_position_size > 0, E_INVALID_QUANTITY);
+
+        // 更新參數
+        relation.copy_ratio = new_copy_ratio;
+        relation.max_position_size = new_max_position_size;
+        relation.fee_rate = new_fee_rate;
+
+        // 發出事件
+        event::emit(CopyRelationUpdated {
+            leader: relation.leader,
+            follower: relation.follower,
+            new_copy_ratio,
+            new_max_position_size,
+            new_fee_rate,
+            timestamp: tx_context::epoch(ctx),
+        });
+    }
+
+    /// 停止跟單關係
+    public entry fun stop_copy_relation(
+        registry: &mut CopyTradeRegistry,
+        relation: CopyTradeRelation,
+        ctx: &mut TxContext
+    ) {
+        let sender = tx_context::sender(ctx);
+
+        // 權限檢查（follower 或 leader 都可以停止）
+        assert!(
+            relation.follower == sender || relation.leader == sender,
+            E_UNAUTHORIZED
         );
 
-        follower_position
+        // 更新註冊表
+        update_registry_on_stop(registry, relation.leader, relation.follower);
+
+        // 發出事件
+        event::emit(CopyRelationStopped {
+            leader: relation.leader,
+            follower: relation.follower,
+            total_trades_copied: relation.total_copied_trades,
+            total_fees_paid: relation.total_fees_paid,
+            timestamp: tx_context::epoch(ctx),
+        });
+
+        // 銷毀關係對象
+        let CopyTradeRelation {
+            id,
+            leader: _,
+            follower: _,
+            copy_ratio: _,
+            max_position_size: _,
+            fee_rate: _,
+            is_active: _,
+            created_at: _,
+            total_copied_trades: _,
+            total_fees_paid: _,
+            last_copy_at: _,
+        } = relation;
+        object::delete(id);
     }
 
-    /// 批量執行跟單
-    public fun batch_execute_copy_trades<T>(
-        registry: &CopyRelationRegistry,
-        // ... 其他參數
-        follower_vaults: &mut vector<Vault<T>>,
-        // ...
-    ): vector<Position<T>> {
-        // ...
-        // 迴圈遍歷 Vaults
-        // 嚴格匹配檢查：
-        // assert!(vault::owner(vault) == relation.follower, EUnauthorizedVault);
-        // ...
+    /// Leader 發出交易信號（由前端/後端調用）
+    public entry fun emit_leader_trade_signal(
+        profile: &mut TraderProfile,
+        pool_id: ID,
+        side: bool,
+        order_type: u8,
+        price: Option<u64>,
+        quantity: u64,
+        leverage: u8,
+        tx_digest: vector<u8>,
+        ctx: &mut TxContext
+    ) {
+        let sender = tx_context::sender(ctx);
+
+        // 權限檢查
+        assert!(trader_profile::get_trader(profile) == sender, E_UNAUTHORIZED);
+
+        // 參數驗證
+        assert!(quantity > 0, E_INVALID_QUANTITY);
+        assert!(leverage >= 1 && leverage <= 10, E_INVALID_COPY_RATIO);
+
+        // 更新交易者統計
+        trader_profile::increment_total_trades(profile);
+
+        // 發出事件（後端監聽此事件以執行跟單）
+        event::emit(LeaderTradeSignal {
+            leader: sender,
+            pool_id,
+            side,
+            order_type,
+            price,
+            quantity,
+            leverage,
+            timestamp: tx_context::epoch(ctx),
+            tx_digest,
+        });
+    }
+
+    /// 記錄跟單執行（由後端服務調用）
+    /// 注意：實際的 DeepBook 交易在此函數外部執行
+    public entry fun record_copy_trade_execution(
+        relation: &mut CopyTradeRelation,
+        leader_profile: &mut TraderProfile,
+        fee_config: &mut FeeConfig,
+        fee_payment: Coin<SUI>,
+        original_quantity: u64,
+        copied_quantity: u64,
+        ctx: &mut TxContext
+    ) {
+        let sender = tx_context::sender(ctx);
+
+        // 權限檢查
+        assert!(relation.follower == sender, E_UNAUTHORIZED);
+        assert!(relation.is_active, E_RELATION_NOT_FOUND);
+
+        // 計算費用分配
+        let total_fee = coin::value(&fee_payment);
+        let (protocol_fee, leader_fee) = fee_manager::calculate_fee_split(
+            total_fee,
+            fee_config.protocol_fee_rate
+        );
+
+        // 分配費用
+        let protocol_coin = coin::split(&mut fee_payment, protocol_fee, ctx);
+        transfer::public_transfer(protocol_coin, fee_config.treasury);
+        transfer::public_transfer(fee_payment, relation.leader);
+
+        // 更新統計
+        relation.total_copied_trades = relation.total_copied_trades + 1;
+        relation.total_fees_paid = relation.total_fees_paid + total_fee;
+        relation.last_copy_at = tx_context::epoch(ctx);
+
+        trader_profile::add_fees_earned(leader_profile, leader_fee);
+        fee_config.total_fees_collected = fee_config.total_fees_collected + protocol_fee;
+
+        // 發出事件
+        event::emit(CopyTradeExecuted {
+            leader: relation.leader,
+            follower: relation.follower,
+            original_quantity,
+            copied_quantity,
+            copy_ratio: relation.copy_ratio,
+            fee_paid: total_fee,
+            success: true,
+            timestamp: tx_context::epoch(ctx),
+        });
+    }
+
+    /// 記錄跟單失敗
+    public entry fun record_copy_trade_failed(
+        leader: address,
+        follower: address,
+        reason: u8,
+        ctx: &mut TxContext
+    ) {
+        // 發出失敗事件（供後端分析）
+        event::emit(CopyTradeFailed {
+            leader,
+            follower,
+            reason,
+            timestamp: tx_context::epoch(ctx),
+        });
+    }
+
+    // ==================== 輔助函數 ====================
+
+    /// 計算跟單規模
+    public fun calculate_copy_size(
+        leader_quantity: u64,
+        copy_ratio: u64,
+        max_position_size: u64
+    ): u64 {
+        let calculated_size = (leader_quantity * copy_ratio) / BPS_DENOMINATOR;
+
+        // 應用最大倉位限制
+        if (calculated_size > max_position_size) {
+            max_position_size
+        } else if (calculated_size < MIN_COPY_QUANTITY) {
+            0  // 太小則不跟單
+        } else {
+            calculated_size
+        }
+    }
+
+    /// 檢查風險是否可接受
+    public fun is_risk_acceptable(risk_ratio_bps: u64): bool {
+        risk_ratio_bps >= MIN_RISK_RATIO_BPS
+    }
+
+    /// 計算跟單費用
+    public fun calculate_copy_fee(
+        position_value: u64,
+        fee_rate: u64
+    ): u64 {
+        (position_value * fee_rate) / BPS_DENOMINATOR
+    }
+
+    // ==================== 內部函數 ====================
+
+    /// 創建關係時更新註冊表
+    fun update_registry_on_create(
+        registry: &mut CopyTradeRegistry,
+        leader: address,
+        follower: address
+    ) {
+        // 更新 leader_to_followers
+        if (!table::contains(&registry.leader_to_followers, leader)) {
+            table::add(&mut registry.leader_to_followers, leader, vector::empty<address>());
+        };
+        let followers = table::borrow_mut(&mut registry.leader_to_followers, leader);
+        vector::push_back(followers, follower);
+
+        // 更新 follower_to_leaders
+        if (!table::contains(&registry.follower_to_leaders, follower)) {
+            table::add(&mut registry.follower_to_leaders, follower, vector::empty<address>());
+        };
+        let leaders = table::borrow_mut(&mut registry.follower_to_leaders, follower);
+        vector::push_back(leaders, leader);
+
+        // 更新計數
+        registry.total_relations = registry.total_relations + 1;
+        registry.total_active_relations = registry.total_active_relations + 1;
+    }
+
+    /// 停止關係時更新註冊表
+    fun update_registry_on_stop(
+        registry: &mut CopyTradeRegistry,
+        leader: address,
+        follower: address
+    ) {
+        // 從 leader_to_followers 移除
+        if (table::contains(&registry.leader_to_followers, leader)) {
+            let followers = table::borrow_mut(&mut registry.leader_to_followers, leader);
+            let (found, index) = vector::index_of(followers, &follower);
+            if (found) {
+                vector::remove(followers, index);
+            };
+        };
+
+        // 從 follower_to_leaders 移除
+        if (table::contains(&registry.follower_to_leaders, follower)) {
+            let leaders = table::borrow_mut(&mut registry.follower_to_leaders, follower);
+            let (found, index) = vector::index_of(leaders, &leader);
+            if (found) {
+                vector::remove(leaders, index);
+            };
+        };
+
+        // 更新計數
+        registry.total_active_relations = registry.total_active_relations - 1;
+    }
+
+    // ==================== 查詢函數（View Functions）====================
+
+    /// 獲取 Leader 的 Followers 列表
+    public fun get_followers(
+        registry: &CopyTradeRegistry,
+        leader: address
+    ): vector<address> {
+        if (table::contains(&registry.leader_to_followers, leader)) {
+            *table::borrow(&registry.leader_to_followers, leader)
+        } else {
+            vector::empty<address>()
+        }
+    }
+
+    /// 獲取 Follower 跟隨的 Leaders 列表
+    public fun get_leaders(
+        registry: &CopyTradeRegistry,
+        follower: address
+    ): vector<address> {
+        if (table::contains(&registry.follower_to_leaders, follower)) {
+            *table::borrow(&registry.follower_to_leaders, follower)
+        } else {
+            vector::empty<address>()
+        }
+    }
+
+    /// 檢查跟單關係是否活躍
+    public fun is_relation_active(relation: &CopyTradeRelation): bool {
+        relation.is_active
+    }
+
+    /// 獲取關係詳情
+    public fun get_relation_info(relation: &CopyTradeRelation): (
+        address,  // leader
+        address,  // follower
+        u64,      // copy_ratio
+        u64,      // max_position_size
+        u64,      // fee_rate
+        bool,     // is_active
+        u64,      // total_copied_trades
+        u64       // total_fees_paid
+    ) {
+        (
+            relation.leader,
+            relation.follower,
+            relation.copy_ratio,
+            relation.max_position_size,
+            relation.fee_rate,
+            relation.is_active,
+            relation.total_copied_trades,
+            relation.total_fees_paid
+        )
+    }
+
+    // ==================== 管理員功能 ====================
+
+    /// 更新協議費率（僅管理員）
+    public entry fun update_protocol_fee_rate(
+        fee_config: &mut FeeConfig,
+        new_rate: u64,
+        ctx: &mut TxContext
+    ) {
+        // 實際需添加管理員權限檢查（使用 Capability 模式）
+        assert!(new_rate <= MAX_FEE_RATE_BPS, E_INVALID_FEE_RATE);
+        fee_config.protocol_fee_rate = new_rate;
+    }
+
+    /// 更新 Treasury 地址（僅管理員）
+    public entry fun update_treasury(
+        fee_config: &mut FeeConfig,
+        new_treasury: address,
+        ctx: &mut TxContext
+    ) {
+        // 實際需添加管理員權限檢查
+        fee_config.treasury = new_treasury;
+    }
+
+    // ==================== 測試輔助函數 ====================
+
+    #[test_only]
+    public fun init_for_testing(ctx: &mut TxContext) {
+        init(ctx);
+    }
+
+    #[test_only]
+    public fun get_min_risk_ratio(): u64 {
+        MIN_RISK_RATIO_BPS
     }
 }
 ```
-
-### 1.1 Delegated Modules (安全性核心)
-
-為了實現自動化跟單且不犧牲安全性，我們在 `Vault` 和 `Position` 模組中引入了 **Package-Protected** 的委派函數。這些函數只能被同 Package 的 `copy_executor` 調用。
-
-**Vault 模組 (`vault.move`)**:
-```move
-// 允許同 Package 合約扣除保證金，無需 Owner 簽名
-public(package) fun deduct_margin_delegated<T>(
-    vault: &mut Vault<T>,
-    amount: u64
-): Balance<T> {
-    // ... 餘額檢查與狀態更新 ...
-}
-```
-
-**Position 模組 (`position.move`)**:
-```move
-// 允許同 Package 合約代為開倉，倉位所有權歸 Vault Owner
-public(package) fun open_position_delegated<T>(
-    vault: &mut Vault<T>,
-    // ... 參數 ...
-): Position<T> {
-    // 1. 調用 deduct_margin_delegated
-    // 2. 創建 Position，Owner 設為 vault::owner(vault)
-}
-``````
 
 ### 2. trader_profile.move (交易者檔案模組)
 
@@ -1049,6 +1499,294 @@ await signAndExecute(tx3);
 
 ---
 
+## 🤖 TradingBot 架構（v3.0 - 自動跟單）
+
+> **版本:** 3.0
+> **日期:** 2026-02-08
+> **狀態:** In Development
+> **目的:** 解決自動跟單問題，實現真正的 copy trading automation
+
+### 背景問題
+
+**當前架構限制**：
+- `Vault<T>` 是 **owned object**，只有 owner 可以在交易中引用
+- Backend bot 無法代表 follower 執行跟單交易
+- **結果**：每次跟單都需要 follower 親自簽署 → 違背自動化初衷
+
+**安全隱患**：
+1. 假信號攻擊：惡意 trader 故意發出錯誤信號
+2. Pump & Dump：Trader 快速開平倉造成 follower 損失
+3. 對沖套利：Trader 在其他平台做空獲利
+4. 信號偽造：駭客冒充 trader
+
+### 核心設計：Shared TradingBot
+
+**理念**：每個 Follower 一個專屬 TradingBot（Shared Object + 嚴格權限控制）
+
+```
+Follower → TradingBot (Shared) → Embedded Vault → 自動跟單
+             ↓ (只有 owner 可以提款/銷毀)
+           資金完全隔離
+```
+
+**關鍵創新**：
+1. **資金隔離**：每個 follower 有專屬 bot，資金不混在一起
+2. **自動執行**：Bot 是 shared object，backend 可以調用
+3. **嚴格權限**：只有 owner 可以提款、更新參數、銷毀 bot
+4. **內建安全**：止損、持倉時間驗證、trader position 驗證
+5. **假信號防護**：必須引用真實的 trader position object
+
+### TradingBot 數據結構
+
+```move
+/// Trading bot for automated copy trading
+public struct TradingBot<phantom T> has key {
+    id: UID,
+    owner: address,                    // Follower（只有 owner 可以提款/銷毀）
+    vault: Vault<T>,                   // Embedded vault 持有資金
+    followed_trader: address,          // 跟單的 trader
+
+    // Copy parameters
+    copy_ratio: u64,                   // Basis points (1-10000)
+    max_position_size: u64,            // 單次最大倉位
+
+    // Security parameters
+    daily_loss_limit: u64,             // 每日最大虧損
+    today_losses: u64,                 // 今日累計虧損
+    last_reset_day: u64,               // 上次重置日期
+
+    min_trader_hold_duration_ms: u64,  // Trader 最小持倉時間（防 pump & dump）
+    require_trader_position_open: bool, // 只在 trader position OPEN 時跟單
+
+    // State
+    is_active: bool,                   // 是否活躍跟單
+    created_at: u64,
+    total_trades_copied: u64,
+}
+
+/// Bot registry (shared object)
+public struct TradingBotRegistry has key {
+    id: UID,
+    trader_to_bots: Table<address, vector<ID>>,  // trader → bot IDs
+    total_bots: u64,
+    total_active_bots: u64,
+}
+```
+
+### 核心函數
+
+#### 1. 創建和管理 Bot
+
+```move
+/// 創建 bot（shared object）
+public entry fun create_trading_bot<T>(
+    registry: &mut TradingBotRegistry,
+    followed_trader: address,
+    copy_ratio: u64,
+    max_position_size: u64,
+    daily_loss_limit: u64,
+    min_trader_hold_duration_ms: u64,
+    clock: &Clock,
+    ctx: &mut TxContext,
+)
+
+/// 存款（只有 owner）
+public entry fun deposit<T>(bot: &mut TradingBot<T>, coin: Coin<T>, ctx: &TxContext)
+
+/// 激活 bot 開始跟單（只有 owner）
+public entry fun activate_bot<T>(bot: &mut TradingBot<T>, ctx: &TxContext)
+
+/// 停用 bot（只有 owner）
+public entry fun deactivate_bot<T>(
+    bot: &mut TradingBot<T>,
+    registry: &mut TradingBotRegistry,
+    ctx: &TxContext,
+)
+
+/// 提款（只有 owner）
+public entry fun withdraw<T>(bot: &mut TradingBot<T>, amount: u64, ctx: &mut TxContext)
+
+/// 銷毀 bot 並取回所有資金（只有 owner）
+public entry fun destroy_bot<T>(
+    bot: TradingBot<T>,
+    registry: &mut TradingBotRegistry,
+    ctx: &mut TxContext,
+)
+```
+
+#### 2. 自動跟單執行（五重安全驗證）
+
+```move
+/// 執行跟單（backend 調用）
+public entry fun execute_copy_trade<T>(
+    bot: &mut TradingBot<T>,
+    trader_position: &Position<T>,  // ← 必須引用真實 position
+    trading_pair: vector<u8>,
+    position_type: u8,
+    entry_price: u64,
+    trader_quantity: u64,
+    leverage: u8,
+    clock: &Clock,
+    ctx: &mut TxContext,
+) {
+    // === 五重安全檢查 ===
+
+    // 1. Bot 必須活躍
+    assert!(bot.is_active, EBotInactive);
+
+    // 2. Trader position 必須仍然 OPEN
+    if (bot.require_trader_position_open) {
+        assert!(position::is_open(trader_position), ETraderPositionClosed);
+    };
+
+    // 3. Trader 身份驗證
+    let trader = position::owner(trader_position);
+    assert!(trader == bot.followed_trader, EUnauthorized);
+
+    // 4. 最小持倉時間驗證（防 pump & dump）
+    let position_age = clock::timestamp_ms(clock) - position::opened_at(trader_position);
+    assert!(position_age >= bot.min_trader_hold_duration_ms, EPositionTooRecent);
+
+    // 5. 每日虧損限制檢查
+    reset_daily_losses_if_needed(bot, clock);
+    assert!(bot.today_losses < bot.daily_loss_limit, EDailyLossLimitExceeded);
+
+    // === 執行跟單 ===
+    // ... 計算倉位、開倉、轉移 position 給 bot owner
+}
+```
+
+### 安全機制分析
+
+| 安全項 | 實現方式 | 防護效果 |
+|-------|---------|---------|
+| **資金安全** | 只有 owner 可以提款/銷毀 | ✅ 完全控制 |
+| **假信號防護** | 必須引用真實 trader position object | ✅ 無法偽造 |
+| **Pump & Dump** | `min_trader_hold_duration_ms` 驗證 | ✅ Trader 必須持倉足夠時間 |
+| **對沖套利** | Trader position 必須仍 OPEN | ✅ Trader 平倉後無法跟單 |
+| **止損機制** | 每日虧損上限 `daily_loss_limit` | ✅ 達到限額自動停止 |
+| **DoS 攻擊** | Shared object consensus overhead | ⚠️ Gas 成本增加 20-30% |
+
+### 用戶流程
+
+**Follower 操作（一次性設置）**：
+1. `create_trading_bot()` - 創建專屬 bot
+2. `deposit()` - 存入資金
+3. `activate_bot()` - 激活開始跟單
+
+**自動跟單（無需 follower 簽署）**：
+1. Trader 開倉 → 發出 `PositionOpened` 事件
+2. Backend 監聽事件
+3. Backend 調用 `execute_copy_trade(bot, trader_position, ...)`
+4. 合約驗證五重安全檢查
+5. Position 自動轉移給 bot owner（follower）
+
+**Follower 停止跟單**：
+1. `deactivate_bot()` - 停止跟單
+2. `withdraw()` - 提取資金
+3. `destroy_bot()` - 銷毀 bot（可選）
+
+### Backend 實現
+
+```typescript
+// Backend 監聽 PositionOpened 事件
+async handlePositionOpened(event: PositionOpenedEvent) {
+  const trader = event.trader;
+  const traderPositionId = event.positionId;
+
+  // 1. 查詢跟單此 trader 的所有 active bots
+  const bots = await this.getActiveBots(trader);
+
+  for (const bot of bots) {
+    try {
+      // 2. 獲取 trader position object（關鍵！）
+      const traderPosition = await client.getObject({
+        id: traderPositionId,
+        options: { showContent: true },
+      });
+
+      if (!traderPosition.data) {
+        console.warn(`Trader position ${traderPositionId} not found`);
+        continue;
+      }
+
+      // 3. 執行跟單（傳入 trader position）
+      const tx = new Transaction();
+      tx.moveCall({
+        target: `${PACKAGE_ID}::trading_bot::execute_copy_trade`,
+        arguments: [
+          tx.object(bot.id),
+          tx.object(traderPosition.data.objectId),  // ← 引用真實 position
+          tx.pure.vector('u8', event.tradingPair),
+          tx.pure.u8(event.positionType),
+          tx.pure.u64(event.entryPrice),
+          tx.pure.u64(event.quantity),
+          tx.pure.u8(event.leverage),
+          tx.object('0x6'),  // Clock
+        ],
+        typeArguments: [USDC_TYPE],
+      });
+
+      // Backend 簽署並執行（不需要 follower 簽署）
+      await client.signAndExecuteTransaction({
+        transaction: tx,
+        signer: backendKeypair,
+      });
+
+    } catch (error) {
+      console.error(`Copy trade failed for bot ${bot.id}:`, error);
+      // 可能原因：EPositionTooRecent, EDailyLossLimitExceeded
+    }
+  }
+}
+```
+
+### 與舊架構對比
+
+| 維度 | 舊架構（copy_executor） | 新架構（trading_bot） |
+|-----|----------------------|-------------------|
+| **自動化** | ❌ 需要 follower 每次簽署 | ✅ 完全自動化 |
+| **資金隔離** | ❌ 共享 vault | ✅ 每個 follower 專屬 bot |
+| **假信號防護** | ❌ 只驗證 registry | ✅ 必須引用 trader position |
+| **止損機制** | ❌ 無 | ✅ 每日虧損上限 |
+| **Pump & Dump** | ❌ 無防護 | ✅ 最小持倉時間驗證 |
+| **Gas 成本** | 低 | 中等（+20-30%，shared object） |
+| **實施複雜度** | 中 | 高 |
+
+### 遷移策略
+
+**決策**：由於僅本地測試階段，無真實用戶數據
+- ✅ 直接重新部署新合約
+- ✅ 保留 `copy_executor.move` 標記為 deprecated
+- ✅ 前後端更新使用 `trading_bot.move`
+- ✅ 無需數據遷移
+
+### 預估時間表
+
+- **Day 1**: TradingBot 模組實現 + 單元測試（6-8 小時）
+- **Day 2**: Vault/Position 修改 + 集成測試（4-6 小時）
+- **Day 3**: 前端 UI + 後端 indexer 更新（4-6 小時）
+- **Day 4**: 端到端測試 + 部署到 testnet（3-4 小時）
+
+**總計**：約 4 天完成實施和測試
+
+### 關鍵文件
+
+**新建文件**：
+1. `packages/contracts/margin_master/sources/trading_bot.move` - TradingBot 模組
+2. `packages/contracts/margin_master/tests/trading_bot_tests.move` - 單元測試
+3. `packages/frontend/src/hooks/useTradingBot.ts` - Frontend hook
+4. `packages/frontend/src/components/BotManagement.tsx` - UI 組件
+
+**修改文件**：
+1. `packages/contracts/margin_master/sources/vault.move` - 添加 `destroy_empty()`
+2. `packages/contracts/margin_master/sources/position.move` - 添加驗證函數
+3. `packages/contracts/margin_master/sources/events.move` - 添加 bot 事件
+4. `packages/backend/src/services/blockchain-indexer.ts` - 使用 trading_bot
+
+---
+
 **下一步閱讀**：
+- [實施計劃](/Users/ramonliao/.claude/plans/encapsulated-roaming-unicorn.md) - TradingBot 詳細實施步驟
 - [開發計劃](./MarginMaster_Development_Plan.md) - 7天實施時間表
 - [數據庫與 API 設計](./MarginMaster_Database_API.md) - 後端實現

@@ -543,3 +543,17 @@ public fun is_closed<T>(position: &Position<T>): bool {
 public fun position_type<T>(position: &Position<T>): u8 {
     position.position_type
 }
+
+public fun trading_pair<T>(position: &Position<T>): vector<u8> {
+    position.trading_pair
+}
+
+/// Check if position is still open (exists and not closed)
+public fun is_open<T>(position: &Position<T>): bool {
+    !position.is_closed
+}
+
+/// Get position opened timestamp
+public fun opened_at<T>(position: &Position<T>): u64 {
+    position.opened_at
+}

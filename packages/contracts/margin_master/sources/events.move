@@ -6,6 +6,7 @@
 
 module margin_master::events {
     use sui::event;
+    use sui::object::ID;
 
     /// Emitted when a new trading position is opened
     public struct PositionOpened has copy, drop {
@@ -63,6 +64,17 @@ module margin_master::events {
         liquidator: address,
         borrowed_amount: u64,
         liquidator_reward: u64,
+        timestamp: u64,
+    }
+
+    /// Emitted when a bot copy trade is executed
+    public struct BotCopyTradeExecuted has copy, drop {
+        bot_id: ID,
+        trader_position_id: ID,
+        bot_owner: address,
+        trader: address,
+        copied_quantity: u64,
+        margin_used: u64,
         timestamp: u64,
     }
 
@@ -169,6 +181,26 @@ module margin_master::events {
             liquidator,
             borrowed_amount,
             liquidator_reward,
+            timestamp,
+        });
+    }
+
+    public(package) fun emit_bot_copy_trade_executed(
+        bot_id: ID,
+        trader_position_id: ID,
+        bot_owner: address,
+        trader: address,
+        copied_quantity: u64,
+        margin_used: u64,
+        timestamp: u64,
+    ) {
+        event::emit(BotCopyTradeExecuted {
+            bot_id,
+            trader_position_id,
+            bot_owner,
+            trader,
+            copied_quantity,
+            margin_used,
             timestamp,
         });
     }
