@@ -56,11 +56,20 @@ export function useTradingContract() {
         target: `${CONTRACT_ADDRESSES.PACKAGE_ID}::${CONTRACT_ADDRESSES.VAULT_MODULE}::create_vault`,
         typeArguments: [USDC_TYPE],
       })
-      await signAndExecute({ transaction: createTx as any })
-      // Wait a bit for indexer
-      await new Promise((r) => setTimeout(r, 2000))
-      existingVaultId = await findVault(account.address)
-      if (!existingVaultId) throw new Error('Failed to create vault')
+      const createResult = await signAndExecute({ transaction: createTx as any })
+
+      // Wait for indexer and retry up to 5 times
+      let retries = 5
+      while (retries > 0 && !existingVaultId) {
+        await new Promise((r) => setTimeout(r, 1000))
+        existingVaultId = await findVault(account.address)
+        retries--
+      }
+
+      if (!existingVaultId) {
+        console.error('Vault creation TX:', createResult)
+        throw new Error('Failed to create vault - please refresh and try again')
+      }
       vaultArg = tx.object(existingVaultId)
     }
 

@@ -3,6 +3,7 @@ import { useCurrentAccount } from '@mysten/dapp-kit'
 import { useTradingBot } from '@/hooks/useTradingBot'
 import { useToast } from '@/components/Toast'
 import { usdcToDisplay } from '@/types/sui-contracts'
+import { api, CopyRelation } from '@/services/api'
 
 interface TradingBotData {
   id: string
@@ -34,6 +35,7 @@ export function BotManagement() {
   const [bots, setBots] = useState<TradingBotData[]>([])
   const [loading, setLoading] = useState(false)
   const [showCreateModal, setShowCreateModal] = useState(false)
+  const [followedTraders, setFollowedTraders] = useState<CopyRelation[]>([])
 
   // Form states
   const [selectedBot, setSelectedBot] = useState<string | null>(null)
@@ -41,11 +43,23 @@ export function BotManagement() {
   const [withdrawAmount, setWithdrawAmount] = useState('')
 
   // Create bot form
+  const [useCustomAddress, setUseCustomAddress] = useState(false)
+  const [selectedTrader, setSelectedTrader] = useState('')
   const [traderAddress, setTraderAddress] = useState('')
   const [copyRatio, setCopyRatio] = useState(50)
   const [maxPositionSize, setMaxPositionSize] = useState('1000')
   const [minHoldDuration, setMinHoldDuration] = useState('3600') // 1 hour
   const [dailyLossLimit, setDailyLossLimit] = useState('100')
+
+  const loadFollowedTraders = async () => {
+    if (!account?.address) return
+    try {
+      const relations = await api.getCopyRelations(account.address)
+      setFollowedTraders(Array.isArray(relations) ? relations.filter((r) => r.isActive) : [])
+    } catch (e) {
+      console.error('Failed to load followed traders:', e)
+    }
+  }
 
   const loadBots = async () => {
     if (!account?.address) return
@@ -76,13 +90,20 @@ export function BotManagement() {
 
   useEffect(() => {
     loadBots()
+    loadFollowedTraders()
   }, [account?.address])
 
   const handleCreateBot = async () => {
+    const finalTrader = useCustomAddress ? traderAddress : selectedTrader
+    if (!finalTrader) {
+      toast({ title: 'Please select or enter a trader address', type: 'error' })
+      return
+    }
+
     setLoading(true)
     try {
       await createTradingBot({
-        followedTrader: traderAddress,
+        followedTrader: finalTrader,
         copyRatio,
         maxPositionSize: parseFloat(maxPositionSize),
         minHoldDuration: parseInt(minHoldDuration),
@@ -90,6 +111,10 @@ export function BotManagement() {
       })
       toast({ title: 'Bot created successfully!', type: 'success' })
       setShowCreateModal(false)
+      // Reset form
+      setSelectedTrader('')
+      setTraderAddress('')
+      setUseCustomAddress(false)
       await loadBots()
     } catch (err: any) {
       toast({ title: 'Failed to create bot', description: err.message, type: 'error' })
@@ -348,13 +373,48 @@ export function BotManagement() {
                 <label className="block text-sm font-medium text-gray-300 mb-2">
                   Trader Address
                 </label>
-                <input
-                  type="text"
-                  value={traderAddress}
-                  onChange={(e) => setTraderAddress(e.target.value)}
-                  placeholder="0x..."
-                  className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white"
-                />
+                {followedTraders.length > 0 && !useCustomAddress ? (
+                  <div className="space-y-2">
+                    <select
+                      value={selectedTrader}
+                      onChange={(e) => setSelectedTrader(e.target.value)}
+                      className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white"
+                    >
+                      <option value="">Select a trader you follow...</option>
+                      {followedTraders.map((trader) => (
+                        <option key={trader.traderAddress} value={trader.traderAddress}>
+                          {trader.traderUsername || `${trader.traderAddress.slice(0, 10)}...`}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      onClick={() => setUseCustomAddress(true)}
+                      className="text-sm text-primary-400 hover:underline"
+                    >
+                      Or enter custom address
+                    </button>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    <input
+                      type="text"
+                      value={traderAddress}
+                      onChange={(e) => setTraderAddress(e.target.value)}
+                      placeholder="0x..."
+                      className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white"
+                    />
+                    {followedTraders.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setUseCustomAddress(false)}
+                        className="text-sm text-primary-400 hover:underline"
+                      >
+                        Or select from followed traders
+                      </button>
+                    )}
+                  </div>
+                )}
               </div>
 
               <div>

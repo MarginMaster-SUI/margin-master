@@ -39,10 +39,11 @@ export function useTradingBot() {
       arguments: [
         tx.object(CONTRACT_ADDRESSES.TRADING_BOT_REGISTRY_ID),
         tx.pure.address(args.followedTrader),
-        tx.pure.u64(args.copyRatio),
+        tx.pure.u64(args.copyRatio * 100), // Convert percentage to basis points
         tx.pure.u64(Math.floor(args.maxPositionSize * 1_000_000)),
-        tx.pure.u64(args.minHoldDuration),
         tx.pure.u64(Math.floor(args.dailyLossLimit * 1_000_000)),
+        tx.pure.u64(args.minHoldDuration * 1000), // Convert seconds to milliseconds
+        tx.object(CONTRACT_ADDRESSES.SUI_CLOCK_OBJECT_ID),
       ],
     })
 
