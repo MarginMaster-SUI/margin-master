@@ -99,32 +99,37 @@ export function useTradingContract() {
                   `Please wait 1-2 minutes and refresh the page. TX: ${createResult.digest?.slice(0, 10)}...`,
               )
             }
-          }
 
-          // At this point, txBlock.effects.status must exist (or we would have thrown above)
-          if (!txBlock.effects?.status) {
-            throw new Error('Unexpected: TX effects not available after extended wait')
-          }
+            // Vault found after extended wait - skip further TX status checks
+            // (No need to verify TX success since vault exists)
+          } else if (!existingVaultId) {
+            // TX has effects but vault not found - check if TX succeeded or failed
 
-          if (txBlock.effects.status.status === 'success') {
-            // TX succeeded but vault not indexed yet (most common case)
-            throw new Error(
-              `Vault created successfully but not indexed yet. ` +
-                `Please wait 30-60 seconds and try again. TX: ${createResult.digest?.slice(0, 10)}...`,
-            )
-          } else {
-            // TX actually failed on-chain
-            console.error('Vault creation TX failed:', {
-              digest: createResult.digest,
-              status: txBlock.effects.status,
-              gasUsed: txBlock.effects.gasUsed,
-              fullTx: txBlock,
-            })
-            const errorMsg = txBlock.effects.status.error || 'Unknown error'
-            throw new Error(
-              `Vault creation failed: ${errorMsg}. ` +
-                `Full TX: ${createResult.digest} - Check browser console for details.`,
-            )
+            // At this point, txBlock.effects.status must exist
+            if (!txBlock.effects?.status) {
+              throw new Error('Unexpected: TX effects not available after extended wait')
+            }
+
+            if (txBlock.effects.status.status === 'success') {
+              // TX succeeded but vault not indexed yet (most common case)
+              throw new Error(
+                `Vault created successfully but not indexed yet. ` +
+                  `Please wait 30-60 seconds and try again. TX: ${createResult.digest?.slice(0, 10)}...`,
+              )
+            } else {
+              // TX actually failed on-chain
+              console.error('Vault creation TX failed:', {
+                digest: createResult.digest,
+                status: txBlock.effects.status,
+                gasUsed: txBlock.effects.gasUsed,
+                fullTx: txBlock,
+              })
+              const errorMsg = txBlock.effects.status.error || 'Unknown error'
+              throw new Error(
+                `Vault creation failed: ${errorMsg}. ` +
+                  `Full TX: ${createResult.digest} - Check browser console for details.`,
+              )
+            }
           }
         } catch (queryError: any) {
           // Re-throw our custom messages
