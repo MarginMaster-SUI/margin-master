@@ -477,7 +477,7 @@ export function BotManagement() {
                 </button>
                 <button
                   onClick={handleCreateBot}
-                  disabled={loading || !traderAddress}
+                  disabled={loading || (!traderAddress && !selectedTrader)}
                   className="flex-1 px-4 py-2 bg-primary-600 hover:bg-primary-700 text-white rounded-lg font-medium disabled:opacity-50"
                 >
                   {loading ? 'Creating...' : 'Create Bot'}
