@@ -7,15 +7,32 @@ const POSITION_TYPE = `${CONTRACT_ADDRESSES.PACKAGE_ID}::position::Position<${US
 const POLL_INTERVAL = 15_000
 
 function parseFields(fields: Record<string, any>): Partial<Position> {
+  // Parse trading_pair from vector<u8>
+  let tradingPair = ''
+  if (fields.trading_pair) {
+    try {
+      tradingPair = new TextDecoder().decode(new Uint8Array(fields.trading_pair))
+    } catch (e) {
+      console.warn('Failed to decode trading_pair:', e)
+    }
+  }
+
+  // Parse margin from Balance<T> object or direct amount field
+  const margin = String(
+    fields.margin?.fields?.value ?? // Balance<T> struct
+      fields.margin_amount ?? // Direct field (if exists)
+      '0'
+  )
+
   return {
     user: fields.owner ?? '',
-    trading_pair: fields.trading_pair ? new TextDecoder().decode(new Uint8Array(fields.trading_pair)) : '',
+    trading_pair: tradingPair,
     position_type: Number(fields.position_type) === 0 ? 'LONG' : 'SHORT',
     entry_price: String(fields.entry_price ?? '0'),
     current_price: String(fields.current_price ?? '0'),
     quantity: String(fields.quantity ?? '0'),
     leverage: Number(fields.leverage ?? 1),
-    margin: String(fields.margin?.fields?.value ?? fields.margin_amount ?? '0'),
+    margin,
     unrealized_pnl: '0',
     is_profit: true,
     status: fields.is_closed ? 'CLOSED' : 'OPEN',

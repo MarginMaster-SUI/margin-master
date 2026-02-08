@@ -4,11 +4,20 @@ import { api, CopyRelation } from '@/services/api'
 import { useTradingContract } from '@/hooks/useTradingContract'
 import { PositionsList } from '@/components/PositionsList'
 import { useToast } from '@/components/Toast'
+import { BotManagement } from '@/components/BotManagement'
+
+const COPY_TABS = [
+  { key: 'manual', label: 'Manual Follow' },
+  { key: 'bots', label: 'Trading Bots' },
+] as const
+
+type CopyTabKey = (typeof COPY_TABS)[number]['key']
 
 export function CopyTradingTab() {
   const account = useCurrentAccount()
   const { deactivateCopyRelation } = useTradingContract()
   const { toast } = useToast()
+  const [activeSubTab, setActiveSubTab] = useState<CopyTabKey>('manual')
   const [relations, setRelations] = useState<CopyRelation[]>([])
   const [loading, setLoading] = useState(true)
   const [unfollowing, setUnfollowing] = useState<string | null>(null)
@@ -59,8 +68,27 @@ export function CopyTradingTab() {
 
   return (
     <div className="space-y-6">
-      {/* Followed Traders */}
-      <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6">
+      {/* Sub-Tab Bar */}
+      <div className="flex gap-1 bg-gray-900 p-1 rounded-xl w-fit border border-gray-800">
+        {COPY_TABS.map((tab) => (
+          <button
+            key={tab.key}
+            onClick={() => setActiveSubTab(tab.key)}
+            className={`px-5 py-2 rounded-lg text-sm font-medium transition-colors ${
+              activeSubTab === tab.key
+                ? 'bg-primary-600 text-white'
+                : 'text-gray-400 hover:text-white hover:bg-gray-800'
+            }`}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      {activeSubTab === 'manual' ? (
+        <>
+          {/* Followed Traders */}
+          <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6">
         <h2 className="text-lg font-bold text-white mb-4">Following</h2>
         {loading ? (
           <div className="text-gray-400 text-sm py-4">Loading...</div>
@@ -102,8 +130,12 @@ export function CopyTradingTab() {
         )}
       </div>
 
-      {/* Positions */}
-      <PositionsList />
+          {/* Positions */}
+          <PositionsList />
+        </>
+      ) : (
+        <BotManagement />
+      )}
     </div>
   )
 }
