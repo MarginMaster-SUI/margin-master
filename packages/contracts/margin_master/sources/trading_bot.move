@@ -61,10 +61,8 @@ public struct TradingBotRegistry has key {
     total_active_bots: u64,
 }
 
-/// Initialize registry (called once during deployment)
-fun init(ctx: &mut TxContext) {
-    create_registry_internal(ctx);
-}
+// Note: init() removed due to testnet upgrade compatibility
+// Use create_registry() entry function instead
 
 /// Internal: create registry
 fun create_registry_internal(ctx: &mut TxContext) {

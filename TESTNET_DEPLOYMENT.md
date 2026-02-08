@@ -1,27 +1,42 @@
 # MarginMaster Testnet Deployment Information
 
-**Deployment Date:** 2026-02-04
+**Deployment Date:** 2026-02-04 | **Last Upgrade:** 2026-02-08
 **Network:** SUI Testnet
-**Status:** ✅ DEPLOYED AND ACTIVE (Security-Hardened Version)
+**Status:** ✅ DEPLOYED AND ACTIVE (TradingBot Integrated)
 
 ---
 
 ## 📦 Deployed Package
 
-**Package ID:**
+**Current Package ID (v3 - TradingBot enabled):**
 ```
-0x361681e0d8b2fdca428a4c4afb9e27af251a0fc3b543e4cb8738d2510a449ca4
+0xd3eef0b924f1699e54ef550515e44668269d0b102f20577067db1a2d2ad6c4f5
 ```
 
-**Transaction Digest:**
+**Upgrade Transaction:**
 ```
-5Rz4eazhDP3B6DQy775DXweSTdsss2G92xdmp924kQ3s
+6XS1vneXSoikeSbF2J7nhk6xZpCY78h8QJbajq7u4QFa
 ```
 
 **Explorer URL:**
 ```
-https://testnet.suivision.xyz/package/0x361681e0d8b2fdca428a4c4afb9e27af251a0fc3b543e4cb8738d2510a449ca4
+https://testnet.suivision.xyz/package/0xd3eef0b924f1699e54ef550515e44668269d0b102f20577067db1a2d2ad6c4f5
 ```
+
+<details>
+<summary>Previous Versions</summary>
+
+**v2 Package ID:**
+```
+0x361681e0d8b2fdca428a4c4afb9e27af251a0fc3b543e4cb8738d2510a449ca4
+```
+
+**v1 Transaction:**
+```
+5Rz4eazhDP3B6DQy775DXweSTdsss2G92xdmp924kQ3s
+```
+
+</details>
 
 ---
 
@@ -33,8 +48,16 @@ https://testnet.suivision.xyz/package/0x361681e0d8b2fdca428a4c4afb9e27af251a0fc3
 ```
 0x452e7b7822f255e40f5df3d075d18b292a72cd315502a744598d45fb6f580672
 ```
-- Used for managing copy trading relationships
+- Used for managing copy trading relationships (legacy delegated execution)
 - Shared object - accessible by all users
+
+**TradingBotRegistry (Shared):**
+```
+0x8e6259b5b745e2458d7ea67e78db20e07cc0c3d49ad662692b5e325a9b50ec51
+```
+- New registry for TradingBot automated copy trading
+- Tracks follower bots per trader
+- Created: 2026-02-08 via `create_registry()` (TX: BHikuYciAY7RqbiazE5xHwx9kDkWKeyU6CC644yT9SRN)
 
 **UpgradeCap (Owned):**
 ```
@@ -49,10 +72,11 @@ https://testnet.suivision.xyz/package/0x361681e0d8b2fdca428a4c4afb9e27af251a0fc3
 
 | Module | Purpose | Entry Functions |
 |--------|---------|----------------|
-| **events** | Event emission for backend sync (6 event types) | - |
+| **events** | Event emission for backend sync (7 event types) | - |
 | **vault** | USDC fund custody + flash loans | `create_vault`, `deposit_entry`, `withdraw_entry` |
 | **position** | Margin trading positions + liquidation | `open_position_entry`, `close_position_entry`, `liquidate_position_entry` |
-| **copy_executor** | Copy trading automation + batch | `add_copy_relation`, `deactivate_copy_relation`, `update_copy_relation`, `execute_copy_trade_entry` |
+| **copy_executor** | Delegated copy trading (legacy) | `add_copy_relation`, `deactivate_copy_relation`, `update_copy_relation`, `execute_copy_trade_entry` |
+| **trading_bot** | ⭐ Automated copy trading with 5-layer security | `create_registry`, `create_trading_bot`, `deposit`, `activate_bot`, `execute_copy_trade`, `destroy_bot` |
 | **flash_liquidator** | Capital-free liquidation via flash loans | `flash_liquidate`, `flash_borrow_liquidate` |
 
 ---
@@ -90,6 +114,11 @@ The backend event indexer listens for these events:
    - Type: `{PACKAGE_ID}::events::FlashLiquidation`
    - Emitted when: Position flash-liquidated (zero-capital)
    - Triggers: Position status update, liquidator reward tracking
+
+7. **BotCopyTradeExecuted** ⭐ New in v3
+   - Type: `{PACKAGE_ID}::events::BotCopyTradeExecuted`
+   - Emitted when: TradingBot executes automated copy trade
+   - Triggers: Bot position tracking, security validation logging
 
 ---
 
