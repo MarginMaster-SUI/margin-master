@@ -2,41 +2,61 @@ import { useEffect, useState } from 'react'
 import { useCurrentAccount } from '@mysten/dapp-kit'
 import { api, CopyRelation } from '@/services/api'
 import { useTradingContract } from '@/hooks/useTradingContract'
+import { useTradingBot } from '@/hooks/useTradingBot'
 import { PositionsList } from '@/components/PositionsList'
 import { useToast } from '@/components/Toast'
-import { BotManagement } from '@/components/BotManagement'
+import { BotStatusDisplay } from '@/components/BotStatusDisplay'
 
-const COPY_TABS = [
-  { key: 'manual', label: 'Manual Follow' },
-  { key: 'bots', label: 'Trading Bots' },
-] as const
-
-type CopyTabKey = (typeof COPY_TABS)[number]['key']
+interface TradingBotData {
+  id: string
+  followed_trader: string
+  is_active: boolean
+  balance: string
+  copy_ratio: number
+  max_position_size: string
+  daily_loss_limit: string
+}
 
 export function CopyTradingTab() {
   const account = useCurrentAccount()
   const { deactivateCopyRelation } = useTradingContract()
+  const { findBots } = useTradingBot()
   const { toast } = useToast()
-  const [activeSubTab, setActiveSubTab] = useState<CopyTabKey>('manual')
   const [relations, setRelations] = useState<CopyRelation[]>([])
+  const [bots, setBots] = useState<TradingBotData[]>([])
   const [loading, setLoading] = useState(true)
   const [unfollowing, setUnfollowing] = useState<string | null>(null)
 
-  const fetchRelations = async () => {
+  const fetchData = async () => {
     if (!account?.address) return
+    setLoading(true)
     try {
-      const data = await api.getCopyRelations(account.address)
-      setRelations(Array.isArray(data) ? data : [])
+      // Fetch copy relations
+      const relationsData = await api.getCopyRelations(account.address)
+      setRelations(Array.isArray(relationsData) ? relationsData : [])
+
+      // Fetch trading bots
+      const botsData = await findBots(account.address)
+      setBots(
+        botsData.map((b) => ({
+          id: b.id,
+          followed_trader: b.data.followed_trader,
+          is_active: b.data.is_active,
+          balance: b.data.vault?.fields?.balance?.fields?.value ?? '0',
+          copy_ratio: b.data.copy_ratio,
+          max_position_size: b.data.max_position_size,
+          daily_loss_limit: b.data.daily_loss_limit,
+        }))
+      )
     } catch (e) {
-      console.error('Failed to fetch copy relations:', e)
-      setRelations([])
+      console.error('Failed to fetch data:', e)
     } finally {
       setLoading(false)
     }
   }
 
   useEffect(() => {
-    fetchRelations()
+    fetchData()
   }, [account?.address])
 
   const handleUnfollow = async (relation: CopyRelation) => {
@@ -68,28 +88,11 @@ export function CopyTradingTab() {
 
   return (
     <div className="space-y-6">
-      {/* Sub-Tab Bar */}
-      <div className="flex gap-1 bg-gray-900 p-1 rounded-xl w-fit border border-gray-800">
-        {COPY_TABS.map((tab) => (
-          <button
-            key={tab.key}
-            onClick={() => setActiveSubTab(tab.key)}
-            className={`px-5 py-2 rounded-lg text-sm font-medium transition-colors ${
-              activeSubTab === tab.key
-                ? 'bg-primary-600 text-white'
-                : 'text-gray-400 hover:text-white hover:bg-gray-800'
-            }`}
-          >
-            {tab.label}
-          </button>
-        ))}
-      </div>
+      <h2 className="text-2xl font-bold text-white">Following Traders</h2>
 
-      {activeSubTab === 'manual' ? (
-        <>
-          {/* Followed Traders */}
-          <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6">
-        <h2 className="text-lg font-bold text-white mb-4">Following</h2>
+      {/* Followed Traders */}
+      <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6">
+        <h3 className="text-lg font-bold text-white mb-4">Active Copy Trades</h3>
         {loading ? (
           <div className="text-gray-400 text-sm py-4">Loading...</div>
         ) : activeRelations.length === 0 ? (
@@ -100,42 +103,47 @@ export function CopyTradingTab() {
             </p>
           </div>
         ) : (
-          <div className="space-y-3">
-            {activeRelations.map((r) => (
-              <div key={r.id} className="flex items-center justify-between p-4 bg-gray-800 rounded-xl">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 bg-gradient-to-br from-primary-500 to-primary-700 rounded-full flex items-center justify-center text-white font-bold text-sm">
-                    {(r.traderUsername || r.traderAddress)[0].toUpperCase()}
-                  </div>
-                  <div>
-                    <div className="text-white font-medium">{r.traderUsername || `${r.traderAddress.slice(0, 8)}...`}</div>
-                    <div className="text-xs text-gray-500">
-                      Ratio: {(r.copyRatio * 100).toFixed(0)}% | Max: {r.maxPositionSize ? `${r.maxPositionSize} USDC` : 'No limit'}
+          <div className="space-y-4">
+            {activeRelations.map((relation) => {
+              const bot = bots.find((b) => b.followed_trader === relation.traderAddress)
+
+              return (
+                <div key={relation.id} className="bg-gray-800 rounded-xl p-5">
+                  {/* Trader Info */}
+                  <div className="flex items-center justify-between mb-4">
+                    <div className="flex items-center gap-3">
+                      <div className="w-12 h-12 bg-gradient-to-br from-primary-500 to-primary-700 rounded-full flex items-center justify-center text-white font-bold">
+                        {(relation.traderUsername || relation.traderAddress)[0].toUpperCase()}
+                      </div>
+                      <div>
+                        <div className="text-white font-semibold">
+                          {relation.traderUsername || `${relation.traderAddress.slice(0, 10)}...`}
+                        </div>
+                        <div className="text-sm text-gray-400">
+                          Ratio: {(relation.copyRatio * 100).toFixed(0)}% | Max: {relation.maxPositionSize} USDC
+                        </div>
+                      </div>
                     </div>
-                    <div className="text-xs text-gray-600">
-                      Since {new Date(r.createdAt).toLocaleDateString()}
-                    </div>
+                    <button
+                      onClick={() => handleUnfollow(relation)}
+                      disabled={unfollowing === relation.id}
+                      className="px-4 py-2 text-sm rounded-lg bg-red-500/10 text-red-400 hover:bg-red-500/20 border border-red-500/20 transition-colors disabled:opacity-50"
+                    >
+                      {unfollowing === relation.id ? 'Unfollowing...' : 'Unfollow'}
+                    </button>
                   </div>
+
+                  {/* Bot Status */}
+                  {bot && <BotStatusDisplay bot={bot} onRefresh={fetchData} />}
                 </div>
-                <button
-                  onClick={() => handleUnfollow(r)}
-                  disabled={unfollowing === r.id}
-                  className="px-4 py-2 text-sm rounded-lg bg-red-500/10 text-red-400 hover:bg-red-500/20 border border-red-500/20 transition-colors disabled:opacity-50"
-                >
-                  {unfollowing === r.id ? 'Unfollowing...' : 'Unfollow'}
-                </button>
-              </div>
-            ))}
+              )
+            })}
           </div>
         )}
       </div>
 
-          {/* Positions */}
-          <PositionsList />
-        </>
-      ) : (
-        <BotManagement />
-      )}
+      {/* Positions */}
+      <PositionsList />
     </div>
   )
 }
