@@ -82,7 +82,7 @@ export function CopyTradingTab() {
                   <div>
                     <div className="text-white font-medium">{r.traderUsername || `${r.traderAddress.slice(0, 8)}...`}</div>
                     <div className="text-xs text-gray-500">
-                      Ratio: {r.copyRatio}% | Max: {r.maxPositionSize ? `${r.maxPositionSize} USDC` : 'No limit'}
+                      Ratio: {(r.copyRatio * 100).toFixed(0)}% | Max: {r.maxPositionSize ? `${r.maxPositionSize} USDC` : 'No limit'}
                     </div>
                     <div className="text-xs text-gray-600">
                       Since {new Date(r.createdAt).toLocaleDateString()}

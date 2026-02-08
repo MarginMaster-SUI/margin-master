@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run build:*)",
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nfix: align copy trade frontend call with on-chain add_copy_relation signature\n\nFrontend was calling non-existent enable_copy_trade, causing FunctionNotFound.\nNow calls add_copy_relation with correct args: registry, trader, follower,\ncopy_ratio, max_position_size.\nEOF\n\\)\")",
+      "Bash(git push:*)",
+      "Bash(npx tsc:*)",
+      "Bash(npx vite build:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nfix: align frontend with on-chain contract for testnet position opening\n\n- Parse margin as Balance<T> nested struct \\(fields.value\\)\n- Derive position status from is_closed bool instead of missing status field\n- Cap leverage at 20x to match Move contract enforcement\n- Update leverage indicator thresholds and labels\n- Add usePositions hook for on-chain position querying\n- Wire up vault auto-creation + USDC deposit in PTB flow\nEOF\n\\)\")",
+      "Bash(git commit:*)",
+      "Bash(git status:*)",
+      "Bash(npx prisma db seed:*)",
+      "Bash(npx prisma migrate reset:*)",
+      "Bash(curl:*)"
+    ]
+  }
+}
