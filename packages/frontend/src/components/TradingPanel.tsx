@@ -1,8 +1,10 @@
 import { useState, useMemo } from 'react'
 import { useCurrentAccount } from '@mysten/dapp-kit'
 import { useTradingContract } from '@/hooks/useTradingContract'
+import { usePositions } from '@/hooks/usePositions'
 import { useAppStore } from '@/store/app-store'
 import { useToast } from '@/components/Toast'
+import { parseOpenPositionError } from '@/utils/errors'
 
 function FieldError({ message }: { message?: string }) {
   if (!message) return null
@@ -48,6 +50,7 @@ export function TradingPanel() {
   const account = useCurrentAccount()
   const { selectedPair, marketData } = useAppStore()
   const { openPosition } = useTradingContract()
+  const { refetch: refetchPositions } = usePositions()
 
   const [positionType, setPositionType] = useState<'LONG' | 'SHORT'>('LONG')
   const [margin, setMargin] = useState('')
@@ -122,6 +125,9 @@ export function TradingPanel() {
         margin: marginNum,
       })
 
+      // Immediately refresh positions to show new position
+      await refetchPositions()
+
       toast({ title: 'Position opened successfully!', type: 'success' })
       setMargin('')
       setStopLoss('')
@@ -129,7 +135,8 @@ export function TradingPanel() {
       setTouched({})
     } catch (error) {
       console.error('Failed to open position:', error)
-      toast({ title: 'Failed to open position', description: 'Please try again.', type: 'error' })
+      const { title, description } = parseOpenPositionError(error)
+      toast({ title, description, type: 'error' })
     } finally {
       setIsLoading(false)
     }

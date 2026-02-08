@@ -75,17 +75,31 @@ export function useTradingContract() {
       }
 
       if (!existingVaultId) {
-        console.error({
-          message: 'Vault not found after creation',
-          txDigest: createResult.digest,
-          waitTime: '30 seconds',
-          vaultType: VAULT_TYPE,
-          userAddress: account.address,
-        })
-        throw new Error(
-          `Vault creation may still be processing. Transaction: ${createResult.digest?.slice(0, 10)}... ` +
-            `Wait 30 seconds and refresh the page. If issue persists, check SuiScan for transaction status.`,
-        )
+        // Verify TX status to distinguish TX failure vs indexer lag
+        try {
+          const txBlock = await suiClient.getTransactionBlock({ digest: createResult.digest! })
+
+          if (txBlock.effects?.status?.status === 'success') {
+            // TX succeeded but indexer lag
+            throw new Error(
+              `Vault created successfully but not indexed yet. ` +
+                `Please wait 30 seconds and refresh. TX: ${createResult.digest?.slice(0, 10)}...`,
+            )
+          } else {
+            // TX failed on-chain
+            const errorMsg = txBlock.effects?.status?.error || 'Unknown error'
+            throw new Error(`Vault creation failed: ${errorMsg}. TX: ${createResult.digest?.slice(0, 10)}...`)
+          }
+        } catch (queryError: any) {
+          // If getTransactionBlock itself fails, fallback to generic message
+          if (queryError.message?.includes('Vault created successfully')) {
+            throw queryError // Re-throw our custom message
+          }
+          throw new Error(
+            `Vault creation status unknown. Transaction: ${createResult.digest?.slice(0, 10)}... ` +
+              `Check SuiScan for details.`,
+          )
+        }
       }
       vaultArg = tx.object(existingVaultId)
     }
