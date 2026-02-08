@@ -81,12 +81,29 @@ export function useTradingContract() {
 
           // Check if TX effects are available
           if (!txBlock.effects?.status) {
-            // TX submitted but not processed yet (very rare with 30s wait)
-            console.log('Vault creation TX pending:', { digest: createResult.digest, txBlock })
-            throw new Error(
-              `Vault transaction still processing. ` +
-                `Please wait 30-60 seconds and try again. TX: ${createResult.digest?.slice(0, 10)}...`,
-            )
+            // TX submitted but not finalized yet - wait longer
+            console.log('Vault creation TX still pending, waiting additional 30s...', createResult.digest)
+
+            // Additional wait for slow TX finalization
+            let additionalRetries = 15
+            while (additionalRetries > 0 && !existingVaultId) {
+              await new Promise((r) => setTimeout(r, 2000))
+              existingVaultId = await findVault(account.address)
+              additionalRetries--
+            }
+
+            // If still not found, give up and ask user to retry
+            if (!existingVaultId) {
+              throw new Error(
+                `Vault transaction taking longer than expected. ` +
+                  `Please wait 1-2 minutes and refresh the page. TX: ${createResult.digest?.slice(0, 10)}...`,
+              )
+            }
+          }
+
+          // At this point, txBlock.effects.status must exist (or we would have thrown above)
+          if (!txBlock.effects?.status) {
+            throw new Error('Unexpected: TX effects not available after extended wait')
           }
 
           if (txBlock.effects.status.status === 'success') {
