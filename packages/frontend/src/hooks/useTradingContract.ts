@@ -79,21 +79,31 @@ export function useTradingContract() {
         try {
           const txBlock = await suiClient.getTransactionBlock({ digest: createResult.digest! })
 
-          if (txBlock.effects?.status?.status === 'success') {
-            // TX succeeded but indexer lag - this is the most likely case
+          // Check if TX effects are available
+          if (!txBlock.effects?.status) {
+            // TX submitted but not processed yet (very rare with 30s wait)
+            console.log('Vault creation TX pending:', { digest: createResult.digest, txBlock })
+            throw new Error(
+              `Vault transaction still processing. ` +
+                `Please wait 30-60 seconds and try again. TX: ${createResult.digest?.slice(0, 10)}...`,
+            )
+          }
+
+          if (txBlock.effects.status.status === 'success') {
+            // TX succeeded but vault not indexed yet (most common case)
             throw new Error(
               `Vault created successfully but not indexed yet. ` +
                 `Please wait 30-60 seconds and try again. TX: ${createResult.digest?.slice(0, 10)}...`,
             )
           } else {
-            // TX failed on-chain - log full details for debugging
+            // TX actually failed on-chain
             console.error('Vault creation TX failed:', {
               digest: createResult.digest,
-              status: txBlock.effects?.status,
-              gasUsed: txBlock.effects?.gasUsed,
+              status: txBlock.effects.status,
+              gasUsed: txBlock.effects.gasUsed,
               fullTx: txBlock,
             })
-            const errorMsg = txBlock.effects?.status?.error || 'Unknown error'
+            const errorMsg = txBlock.effects.status.error || 'Unknown error'
             throw new Error(
               `Vault creation failed: ${errorMsg}. ` +
                 `Full TX: ${createResult.digest} - Check browser console for details.`,
