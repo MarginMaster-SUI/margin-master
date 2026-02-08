@@ -41,6 +41,7 @@ export function useTradingContract() {
     tx.setSender(account.address)
 
     // --- Vault ---
+    // Force refresh check for existing vault (user may have created in another session)
     let existingVaultId = await findVault(account.address)
     let vaultArg: ReturnType<typeof tx.object>
 
@@ -58,17 +59,33 @@ export function useTradingContract() {
       })
       const createResult = await signAndExecute({ transaction: createTx as any })
 
-      // Wait for indexer and retry up to 5 times
-      let retries = 5
+      // Validate transaction succeeded
+      if (!createResult.digest) {
+        throw new Error('Vault creation transaction failed - check wallet for details')
+      }
+
+      console.log('Vault creation TX sent:', createResult.digest)
+
+      // Wait for indexer with increased retry window
+      let retries = 15 // Increased from 5 to 15
       while (retries > 0 && !existingVaultId) {
-        await new Promise((r) => setTimeout(r, 1000))
+        await new Promise((r) => setTimeout(r, 2000)) // Increased from 1s to 2s
         existingVaultId = await findVault(account.address)
         retries--
       }
 
       if (!existingVaultId) {
-        console.error('Vault creation TX:', createResult)
-        throw new Error('Failed to create vault - please refresh and try again')
+        console.error({
+          message: 'Vault not found after creation',
+          txDigest: createResult.digest,
+          waitTime: '30 seconds',
+          vaultType: VAULT_TYPE,
+          userAddress: account.address,
+        })
+        throw new Error(
+          `Vault creation may still be processing. Transaction: ${createResult.digest?.slice(0, 10)}... ` +
+            `Wait 30 seconds and refresh the page. If issue persists, check SuiScan for transaction status.`,
+        )
       }
       vaultArg = tx.object(existingVaultId)
     }
