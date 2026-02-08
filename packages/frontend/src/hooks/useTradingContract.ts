@@ -80,10 +80,10 @@ export function useTradingContract() {
           const txBlock = await suiClient.getTransactionBlock({ digest: createResult.digest! })
 
           if (txBlock.effects?.status?.status === 'success') {
-            // TX succeeded but indexer lag
+            // TX succeeded but indexer lag - this is the most likely case
             throw new Error(
               `Vault created successfully but not indexed yet. ` +
-                `Please wait 30 seconds and refresh. TX: ${createResult.digest?.slice(0, 10)}...`,
+                `Please wait 30-60 seconds and try again. TX: ${createResult.digest?.slice(0, 10)}...`,
             )
           } else {
             // TX failed on-chain
@@ -91,13 +91,14 @@ export function useTradingContract() {
             throw new Error(`Vault creation failed: ${errorMsg}. TX: ${createResult.digest?.slice(0, 10)}...`)
           }
         } catch (queryError: any) {
-          // If getTransactionBlock itself fails, fallback to generic message
-          if (queryError.message?.includes('Vault created successfully')) {
-            throw queryError // Re-throw our custom message
+          // Re-throw our custom messages
+          if (queryError.message?.includes('Vault created successfully') || queryError.message?.includes('Vault creation failed')) {
+            throw queryError
           }
+          // If getTransactionBlock API fails, assume indexer lag (TX has digest = submitted)
           throw new Error(
-            `Vault creation status unknown. Transaction: ${createResult.digest?.slice(0, 10)}... ` +
-              `Check SuiScan for details.`,
+            `Vault transaction submitted but status pending. ` +
+              `Please wait 30-60 seconds and try again. TX: ${createResult.digest?.slice(0, 10)}...`,
           )
         }
       }
